@@ -18,6 +18,7 @@ Entry points (`[project.scripts]`): `up` → `up.py:app`, `down` → `down.py:ap
 | `detect_gpu.py` | `detect_gpu()` → `cuda`/`rocm`/`none` from host devices; the `Gpu` literal. |
 | `modes.py` | `resolve_auth_mode()` — validates `PUBLIC_URL` + `AUTH_MODE` from `.env`, rejecting `keycloak` over cleartext `http://`. |
 | `context_sha.py` | `compute_service_shas()` — per-service `tree-<hash>` image tags over the `.dockerignore`-allowlisted git tree. |
+| `image_refs.py` | Image-reference collection — `collect_repo_references(root, …globs)` enumerates every reference across compose `x-image-ref` services, bake `x-base-images` (pydantic-validated), Dockerfile `FROM` and yaml `image:` line scans; plus build-arg stripping and remote digest resolution via `imagetools inspect`. `run_build()` consumes the two structural collectors; consumer repos' mirroring tooling consumes the repo scan. |
 
 ## Constraints
 
