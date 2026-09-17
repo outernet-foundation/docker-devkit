@@ -105,6 +105,9 @@ def build(
     lock_only: bool = typer.Option(False, "--lock-only", help="Update lock file without building images."),
     mode: Mode = typer.Option("local", "--mode", help="local: --load images; ci: --push images + registry caches."),
     gpu: Gpu = typer.Option("auto", "--gpu", help="auto|cuda|rocm|none"),
+    gpu_only: bool = typer.Option(
+        False, "--gpu-only", help="Build only the services suffixed for this gpu (requires a concrete --gpu)."
+    ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
     targets_opt: list[str] | None = typer.Option(
         None, "--targets", "-t", help="Build only these services (from the selected bake file)."
@@ -118,6 +121,7 @@ def build(
         lock_only=lock_only,
         mode=mode,
         gpu=gpu,
+        gpu_only=gpu_only,
         no_cache=no_cache,
         targets_opt=targets_opt,
         bake_file=bake_file,
@@ -130,6 +134,7 @@ def run_build(
     lock_only: bool = False,
     mode: Mode = "local",
     gpu: Gpu = "auto",
+    gpu_only: bool = False,
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
     bake_file: Path = DEFAULT_BAKE_FILE,
@@ -151,6 +156,9 @@ def run_build(
     # TOOD: Create separate commands for ci and local modes so typer can do this validation instead of us
     if mode == "ci" and gpu == "auto":
         raise typer.BadParameter("In CI mode, --gpu cannot be 'auto'; specify 'cuda' or 'rocm'.")
+
+    if gpu_only and gpu not in GPU_TYPES:
+        raise typer.BadParameter("--gpu-only requires a concrete gpu (cuda or rocm), not 'auto' or 'none'.")
 
     # For local builds, ensure Docker GC limits are high enough that GPU builds don't cause cache evictions
     if mode == "local" and not lock_only and not targets_opt:
@@ -197,31 +205,13 @@ def run_build(
     command_arguments: list[str] = []
 
     # Determine bake targets
-    targets = [
-        service
-        for service, config in bake_data["services"].items()
-        if config.get("build", {}).get("tags")
-        and (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
-    ]
-
-    # Filter to specific targets if requested
-    # x-cross-compile-targets: services declared here are excluded from the default
-    # target list because they need special (usually per-arch) treatment; an operator
-    # can still opt them in explicitly via --targets. The field is a top-level bake key.
-    cross_compile_targets: set[str] = set(bake_data.get("x-cross-compile-targets", []))
-
     if targets_opt:
         unknown = set(targets_opt) - set(bake_data["services"])
         if unknown:
             raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(bake_data['services'])}")
         targets = [t for t in bake_data["services"] if t in set(targets_opt)]
     else:
-        targets = [
-            service
-            for service in bake_data["services"]
-            if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
-            and service not in cross_compile_targets
-        ]
+        targets = compute_default_targets(bake_data, gpu, gpu_only)
 
     # Configure registry caches in CI mode
     if mode == "ci":
@@ -277,6 +267,25 @@ def run_build(
     baked_images: dict[str, Any] = json.loads(METADATA_PATH.read_text()) if METADATA_PATH.exists() else {}
     if not set(targets) <= baked_images.keys():
         raise RuntimeError("Baked images do not match target images; something went wrong during the bake.")
+
+
+# x-cross-compile-targets: services declared here are excluded from the default
+# target list because they need special (usually per-arch) treatment; an operator
+# can still opt them in explicitly via --targets. The field is a top-level bake key.
+def compute_default_targets(bake_data: dict[str, Any], gpu: Gpu, gpu_only: bool = False) -> list[str]:
+    cross_compile_targets: set[str] = set(bake_data.get("x-cross-compile-targets", []))
+    if gpu_only:
+        return [
+            service
+            for service in bake_data["services"]
+            if service.endswith(f"-{gpu}") and service not in cross_compile_targets
+        ]
+    return [
+        service
+        for service in bake_data["services"]
+        if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
+        and service not in cross_compile_targets
+    ]
 
 
 def main() -> None:
