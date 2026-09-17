@@ -278,9 +278,7 @@ def run_build(
 def compute_default_targets(bake_data: dict[str, Any], gpu: Gpu, gpu_only: bool = False) -> list[str]:
     cross_compile_targets: set[str] = set(bake_data.get("x-cross-compile-targets", []))
     tagged_services = [
-        service
-        for service, config in bake_data["services"].items()
-        if config.get("build", {}).get("tags")
+        service for service, config in bake_data["services"].items() if config.get("build", {}).get("tags")
     ]
     if gpu_only:
         return [
