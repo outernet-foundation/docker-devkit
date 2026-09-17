@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
+COPY_FROM_PATTERN = re.compile(r"^COPY\s+--from=(\S+)", re.MULTILINE)
 IMAGE_LINE_PATTERN = re.compile(r"^\s*image:\s*[\"']?([^\s\"']+)", re.MULTILINE)
 DIGEST_PATTERN = re.compile(r"^Digest:\s+(sha256:[a-f0-9]+)", re.MULTILINE)
 
@@ -44,8 +45,8 @@ def collect_repo_references(
     root: Path,
     compose_glob: str = "compose*.yml",
     bake_glob: str = "compose*.bake.yml",
-    dockerfile_glob: str = "docker/*/Dockerfile*",
-    image_glob: str = "score/*.yaml",
+    dockerfile_glob: str | None = "docker/*/Dockerfile*",
+    image_glob: str | None = "score/*.yaml",
 ) -> list[ImageReference]:
     return (
         [
@@ -58,16 +59,30 @@ def collect_repo_references(
             for path in sorted(root.glob(bake_glob))
             for reference in bake_base_image_refs(_load_yaml_document(path))
         ]
-        + [
-            ImageReference("", match.group(1))
-            for path in sorted(root.glob(dockerfile_glob))
-            for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
-        ]
-        + [
-            ImageReference("", match.group(1))
-            for path in sorted(root.glob(image_glob))
-            for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
-        ]
+        + (
+            [
+                ImageReference("", match.group(1))
+                for path in sorted(root.glob(dockerfile_glob))
+                for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
+            ]
+            + [
+                ImageReference("", match.group(1))
+                for path in sorted(root.glob(dockerfile_glob))
+                for match in COPY_FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
+                if "/" in match.group(1)
+            ]
+            if dockerfile_glob
+            else []
+        )
+        + (
+            [
+                ImageReference("", match.group(1))
+                for path in sorted(root.glob(image_glob))
+                for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
+            ]
+            if image_glob
+            else []
+        )
     )
 
 
@@ -89,6 +104,17 @@ def _load_yaml_document(path: Path) -> object:
 
 def strip_build_args(reference: str) -> str:
     return BUILD_ARG_PATTERN.sub("", reference).strip()
+
+
+def unpinned_references(root: Path) -> list[str]:
+    return [
+        occurrence.reference
+        for occurrence in collect_repo_references(root)
+        if "/" in (reference := strip_build_args(occurrence.reference))
+        and not BUILD_ARG_PATTERN.search(occurrence.reference)
+        and ":" not in (tail := reference[reference.rfind("/") + 1 :])
+        and "@" not in tail
+    ]
 
 
 def resolve_remote_digest(reference: str) -> str:
