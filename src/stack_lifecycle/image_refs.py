@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import datetime
 import re
 import shlex
+import tomllib
 from dataclasses import dataclass
 from itertools import starmap
 from pathlib import Path
 
 import yaml
 from bashrun import bash_output
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
 COPY_FROM_PATTERN = re.compile(r"^COPY\s+--from=(\S+)", re.MULTILINE)
 IMAGE_LINE_PATTERN = re.compile(r"^\s*image:\s*[\"']?([^\s\"']+)", re.MULTILINE)
 DIGEST_PATTERN = re.compile(r"^Digest:\s+(sha256:[a-f0-9]+)", re.MULTILINE)
+MISSING_VERSION = "<missing>"
 
 
 class ComposeService(BaseModel):
@@ -35,10 +38,42 @@ class BakeDocument(BaseModel):
     base_images: dict[str, str] = Field(default_factory=dict, alias="x-base-images")
 
 
+type TomlValue = (
+    str
+    | int
+    | float
+    | bool
+    | datetime.datetime
+    | datetime.date
+    | datetime.time
+    | list[TomlValue]
+    | dict[str, TomlValue]
+)
+
+
+class TomlDocument(RootModel[TomlValue]):
+    pass
+
+
 @dataclass(frozen=True)
 class ImageReference:
     name: str
     reference: str
+
+
+@dataclass(frozen=True)
+class VersionSite:
+    description: str
+    glob: str
+    pattern: str
+    base_image: str | None = None
+
+
+@dataclass(frozen=True)
+class VersionCoupling:
+    name: str
+    pyproject_key: str
+    sites: tuple[VersionSite, ...]
 
 
 def collect_repo_references(
@@ -115,6 +150,52 @@ def unpinned_references(root: Path) -> list[str]:
         and ":" not in (tail := reference[reference.rfind("/") + 1 :])
         and "@" not in tail
     ]
+
+
+def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) -> list[str]:
+    return [
+        f"{coupling.name}: {site.description} at {path}: expected {expected}, found {found}"
+        for coupling in couplings
+        for expected in [_declared_version(_pyproject_value(root, coupling.pyproject_key))]
+        for site in coupling.sites
+        for path in _site_paths(root, site)
+        for found in [_site_version(path, site)]
+        if found != expected
+    ]
+
+
+def _pyproject_value(root: Path, dotted_key: str) -> str:
+    value = TomlDocument.model_validate(tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))).root
+    for component in dotted_key.split("."):
+        if not isinstance(value, dict) or component not in value:
+            raise RuntimeError(f"pyproject key {dotted_key} is missing or non-table at {component}")
+        value = value[component]
+    if not isinstance(value, str):
+        raise TypeError(f"pyproject key {dotted_key} is not a string")
+    return value
+
+
+def _declared_version(specifier: str) -> str:
+    return re.sub(r"^[^0-9]+", "", specifier).split(",")[0].strip()
+
+
+def _site_paths(root: Path, site: VersionSite) -> list[Path]:
+    return sorted(root.glob(site.glob)) or [Path(site.glob)]
+
+
+def _site_version(path: Path, site: VersionSite) -> str:
+    if not path.exists():
+        return MISSING_VERSION
+    haystack = _bake_base_image(path, site.base_image) if site.base_image else path.read_text(encoding="utf-8")
+    match = re.search(site.pattern, haystack)
+    return match.group(1) if match else MISSING_VERSION
+
+
+def _bake_base_image(path: Path, key: str) -> str:
+    return next(
+        (reference.reference for reference in bake_base_image_refs(_load_yaml_document(path)) if reference.name == key),
+        "",
+    )
 
 
 def resolve_remote_digest(reference: str) -> str:
