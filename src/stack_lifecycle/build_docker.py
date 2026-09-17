@@ -272,17 +272,25 @@ def run_build(
 # x-cross-compile-targets: services declared here are excluded from the default
 # target list because they need special (usually per-arch) treatment; an operator
 # can still opt them in explicitly via --targets. The field is a top-level bake key.
+# Services without build.tags (e.g. neural-networks-base-*) stay out too: they are
+# build-only dependencies pulled in via additional_contexts, and bake rejects a
+# tagless target under --push.
 def compute_default_targets(bake_data: dict[str, Any], gpu: Gpu, gpu_only: bool = False) -> list[str]:
     cross_compile_targets: set[str] = set(bake_data.get("x-cross-compile-targets", []))
+    tagged_services = [
+        service
+        for service, config in bake_data["services"].items()
+        if config.get("build", {}).get("tags")
+    ]
     if gpu_only:
         return [
             service
-            for service in bake_data["services"]
+            for service in tagged_services
             if service.endswith(f"-{gpu}") and service not in cross_compile_targets
         ]
     return [
         service
-        for service in bake_data["services"]
+        for service in tagged_services
         if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
         and service not in cross_compile_targets
     ]

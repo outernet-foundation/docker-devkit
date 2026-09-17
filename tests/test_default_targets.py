@@ -24,16 +24,8 @@ def test_none_yields_common_partition():
 
 
 def test_gpu_only_yields_just_that_gpus_services():
-    assert compute_default_targets(BAKE_DATA, "cuda", gpu_only=True) == [
-        "neural-networks-base-cuda",
-        "localizer-cuda",
-        "reconstructor-cuda",
-    ]
-    assert compute_default_targets(BAKE_DATA, "rocm", gpu_only=True) == [
-        "neural-networks-base-rocm",
-        "localizer-rocm",
-        "reconstructor-rocm",
-    ]
+    assert compute_default_targets(BAKE_DATA, "cuda", gpu_only=True) == ["localizer-cuda", "reconstructor-cuda"]
+    assert compute_default_targets(BAKE_DATA, "rocm", gpu_only=True) == ["localizer-rocm", "reconstructor-rocm"]
 
 
 def test_default_with_gpu_yields_common_plus_that_gpu():
@@ -41,10 +33,20 @@ def test_default_with_gpu_yields_common_plus_that_gpu():
         "api",
         "postgres",
         "seaweedfs",
-        "neural-networks-base-cuda",
         "localizer-cuda",
         "reconstructor-cuda",
     ]
+
+
+def test_untagged_services_are_excluded():
+    for targets in (
+        compute_default_targets(BAKE_DATA, "none"),
+        compute_default_targets(BAKE_DATA, "cuda"),
+        compute_default_targets(BAKE_DATA, "cuda", gpu_only=True),
+        compute_default_targets(BAKE_DATA, "rocm", gpu_only=True),
+    ):
+        assert "neural-networks-base-cuda" not in targets
+        assert "neural-networks-base-rocm" not in targets
 
 
 def test_cross_compile_services_always_excluded():
@@ -54,4 +56,5 @@ def test_cross_compile_services_always_excluded():
 
 
 def test_missing_cross_compile_key_is_tolerated():
-    assert compute_default_targets({"services": {"api": {"build": {}}}}, "none") == ["api"]
+    bake_data = {"services": {"api": {"build": {"tags": ["registry/api:${API_SHA}"]}}}}
+    assert compute_default_targets(bake_data, "none") == ["api"]
