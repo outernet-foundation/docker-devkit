@@ -29,7 +29,7 @@ packages = ["src/stack_lifecycle"]
 include = ["src/stack_lifecycle/py.typed"]
 
 [tool.uv.sources]
-bashrun = { git = "https://github.com/outernet-foundation/bashrun.git", rev = "1a0add1eb9e53e19245dcdda3e2018577b4e1153" }
+bashrun = { git = "https://github.com/outernet-foundation/bashrun.git", rev = "0a9e9a466a3ef99c95e316a6f46842741d32ca11" }
 
 [tool.basedpyright]
 venvPath = "."
