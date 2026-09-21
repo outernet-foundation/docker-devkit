@@ -1,6 +1,6 @@
 from typing import Any
 
-from stack_toolkit.build_docker import compute_default_targets
+from docker_devkit.build_docker import compute_default_targets
 
 BAKE_DATA: dict[str, Any] = {
     "services": {

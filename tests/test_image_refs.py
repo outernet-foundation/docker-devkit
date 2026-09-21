@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from stack_toolkit import image_refs
-from stack_toolkit.image_refs import (
+from docker_devkit import image_refs
+from docker_devkit.image_refs import (
     ImageReference,
     VersionCoupling,
     VersionSite,

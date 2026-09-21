@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from stack_toolkit.context_sha import compute_service_shas
+from docker_devkit.context_sha import compute_service_shas
 
 BAKE_CONTENT = """\
 services:

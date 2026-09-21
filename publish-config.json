@@ -1,9 +1,9 @@
 {
   "packages": [
     {
-      "name": "stack-toolkit",
+      "name": "docker-devkit",
       "path": ".",
-      "feeds": { "pypi": "stack-toolkit" }
+      "feeds": { "pypi": "docker-devkit" }
     }
   ],
   "ci_workflow": "ci.yml",
