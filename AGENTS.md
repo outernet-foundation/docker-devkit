@@ -4,7 +4,11 @@
 
 `stack-lifecycle` owns the Docker-stack lifecycle commands — `up`, `down`, `build` — plus the helpers they share (`detect_gpu`, `modes`, `context_sha`). It is a small, generic package that any repo shipping a compose graph can git-reference to get the same bring-up/tear-down / cross-build flow, with a native/consumer split so a repo that authors its own images and a repo that only OCI-includes an upstream artifact both work through the same commands.
 
-The package is `stack_lifecycle` (src-layout under `src/stack_lifecycle/`); its only non-PyPI dependency is `bashrun`, which consumers declare a git source for alongside this package.
+The package is `stack_lifecycle` (src-layout under `src/stack_lifecycle/`); all dependencies resolve from PyPI (`bashrun>=0.1.0` once published, git-source pin only in scratch branches testing unreleased changes).
+
+## Release flow
+
+Publishing rides `ci.yml`'s `publish` job on every push to `main` (gated on the check job): pubpkg — invoked uvx-isolated from a pinned git ref, never a project dependency (stack-lifecycle sits inside pubpkg's own dependency graph; a project-level pubpkg edge is a resolver cycle) — computes the plan from the tag ledger and path-diff, patches the version ephemerally, and publishes to PyPI under OIDC trusted publishing (pending publisher bound to `ci.yml`, no environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `stack-lifecycle-v*` tags are the version ledger (first release `0.1.0`, patch-auto thereafter). API-breaking changes ship with a manually bumped version — patch-auto assumes additive changes.
 
 ## Shape
 

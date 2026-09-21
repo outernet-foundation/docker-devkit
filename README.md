@@ -28,18 +28,14 @@ uv run build --lock-only       # refresh .env.lock without building
 
 ## Consuming from another repo
 
-git-reference the package and use its entry points from your own `pyproject.toml`:
+Install from PyPI and use its entry points:
 
 ```toml
 [project]
-dependencies = ["stack-lifecycle"]
-
-[tool.uv.sources]
-stack-lifecycle = { git = "https://github.com/outernet-foundation/stack-lifecycle.git", rev = "<pin-a-commit-sha>" }
-bashrun = { git = "https://github.com/outernet-foundation/bashrun.git", rev = "<pin-a-commit-sha>" }
+dependencies = ["stack-lifecycle>=0.1.0"]
 ```
 
-`bashrun` is `stack-lifecycle`'s only non-PyPI dependency, so its git source has to be declared alongside — uv's `[tool.uv.sources]` are not transitive.
+`bashrun` resolves transitively from PyPI. To test an unreleased change, pin the repo at a git ref in a scratch branch instead (`stack-lifecycle = { git = "…", rev = "<sha>" }` under `[tool.uv.sources]`) and drop the pin when the release lands.
 
 ## Development
 
