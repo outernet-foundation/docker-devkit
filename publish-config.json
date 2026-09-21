@@ -1,0 +1,11 @@
+{
+  "packages": [
+    {
+      "name": "stack-lifecycle",
+      "path": ".",
+      "feeds": { "pypi": "stack-lifecycle" }
+    }
+  ],
+  "ci_workflow": "ci.yml",
+  "mirror_prefix": "ghcr.io/outernet-foundation/mirror"
+}

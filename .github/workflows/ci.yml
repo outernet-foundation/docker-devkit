@@ -31,3 +31,21 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  publish:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # Workaround: fetch-tags is broken with shallow clones
+      - run: git fetch --tags origin
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Publish
+        run: uvx --from git+https://github.com/outernet-foundation/pubpkg.git@ea2ecf35a93a3c6405b9430a651d2a7b3d2faa6c publish-packages --config publish-config.json

@@ -1,10 +1,10 @@
 [project]
 name = "stack-lifecycle"
-version = "0.1.0"
+version = "0.0.0.dev0"
 description = "Docker-stack lifecycle commands (up/down/build) with a native/consumer split"
 requires-python = ">=3.13"
 dependencies = [
-    "bashrun",
+    "bashrun>=0.1.0",
     "pydantic>=2.11.7",
     "pydantic-settings>=2.9.1",
     "typer>=0.17.4",
@@ -29,7 +29,6 @@ packages = ["src/stack_lifecycle"]
 include = ["src/stack_lifecycle/py.typed"]
 
 [tool.uv.sources]
-bashrun = { git = "https://github.com/outernet-foundation/bashrun.git", rev = "0a9e9a466a3ef99c95e316a6f46842741d32ca11" }
 
 [tool.basedpyright]
 venvPath = "."
