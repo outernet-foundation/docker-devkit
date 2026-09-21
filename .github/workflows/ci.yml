@@ -48,4 +48,4 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Publish
-        run: uvx --from git+https://github.com/outernet-foundation/pubpkg.git@ea2ecf35a93a3c6405b9430a651d2a7b3d2faa6c publish-packages --config publish-config.json
+        run: uvx --from release-kit==0.1.0 publish-packages --config publish-config.json
