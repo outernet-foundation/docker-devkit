@@ -1,5 +1,5 @@
 [project]
-name = "stack-lifecycle"
+name = "stack-toolkit"
 version = "0.0.0.dev0"
 description = "Docker-stack lifecycle commands (up/down/build) with a native/consumer split"
 requires-python = ">=3.13"
@@ -25,8 +25,8 @@ down = "stack_lifecycle.down:app"
 build = "stack_lifecycle.build_docker:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stack_lifecycle"]
-include = ["src/stack_lifecycle/py.typed"]
+packages = ["src/stack_toolkit"]
+include = ["src/stack_toolkit/py.typed"]
 
 [tool.uv.sources]
 

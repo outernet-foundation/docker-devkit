@@ -326,7 +326,7 @@ wheels = [
 ]
 
 [[package]]
-name = "stack-lifecycle"
+name = "stack-toolkit"
 version = "0.0.0.dev0"
 source = { editable = "." }
 dependencies = [

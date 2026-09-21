@@ -1,9 +1,9 @@
 {
   "packages": [
     {
-      "name": "stack-lifecycle",
+      "name": "stack-toolkit",
       "path": ".",
-      "feeds": { "pypi": "stack-lifecycle" }
+      "feeds": { "pypi": "stack-toolkit" }
     }
   ],
   "ci_workflow": "ci.yml",
