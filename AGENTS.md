@@ -1,14 +1,14 @@
-# stack-toolkit
+# docker-devkit
 
 ## What this is
 
-`stack-toolkit` owns the Docker-stack lifecycle commands — `up`, `down`, `build` — plus the helpers they share (`detect_gpu`, `modes`, `context_sha`). It is a small, generic package that any repo shipping a compose graph can git-reference to get the same bring-up/tear-down / cross-build flow, with a native/consumer split so a repo that authors its own images and a repo that only OCI-includes an upstream artifact both work through the same commands.
+`docker-devkit` owns the Docker-stack lifecycle commands — `up`, `down`, `build` — plus the helpers they share (`detect_gpu`, `modes`, `context_sha`). It is a small, generic package that any repo shipping a compose graph can depend on to get the same bring-up/tear-down / cross-build flow, with a native/consumer split so a repo that authors its own images and a repo that only OCI-includes an upstream artifact both work through the same commands.
 
-The package is `stack_toolkit` (src-layout under `src/stack_toolkit/`); all dependencies resolve from PyPI (`bashrun>=0.1.0` once published, git-source pin only in scratch branches testing unreleased changes). The package and repo renamed from `stack-lifecycle` to `stack-toolkit` (operator, 2026-09-20, before the first publish — no artifact carries the old name; old GitHub links redirect).
+The package is `docker_devkit` (src-layout under `src/docker_devkit/`); all dependencies resolve from PyPI (`bashrun>=0.1.0`; git-source pins only in scratch branches testing unreleased changes). The repo and package renamed twice on the way here — `stack-lifecycle` → `stack-toolkit` (2026-09-20, before any publish) and `stack-toolkit` → `docker-devkit` (2026-09-21, member of the `-devkit` family). The PyPI identity is fresh: `docker-devkit` starts its own tag ledger at `0.1.0`; the terminal `stack-toolkit` distributions (≤0.1.1) are deprecation signposts pointing here, not this package's history.
 
 ## Release flow
 
-Publishing rides `ci.yml`'s `publish` job on every push to `main` (gated on the check job): pubpkg — invoked uvx-isolated from a pinned git ref, never a project dependency (stack-toolkit sits inside pubpkg's own dependency graph; a project-level pubpkg edge is a resolver cycle) — computes the plan from the tag ledger and path-diff, patches the version ephemerally, and publishes to PyPI under OIDC trusted publishing (pending publisher bound to `ci.yml`, no environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `stack-toolkit-v*` tags are the version ledger (first release `0.1.0`, patch-auto thereafter). API-breaking changes ship with a manually bumped version — patch-auto assumes additive changes.
+Publishing rides `release.yml`, triggered by a successful CI run on a `main` push: the machinery — release-kit, invoked uvx-isolated, never a project dependency (docker-devkit sits inside its own dependency graph; a project-level release-kit edge is a resolver cycle) — computes the plan from the tag ledger and path-diff, patches the version ephemerally, and publishes to PyPI under OIDC trusted publishing (publisher bound to `release.yml`, no environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `docker-devkit-v*` tags are the version ledger (first release `0.1.0`, patch-auto thereafter). API-breaking changes ship with a manually bumped version — patch-auto assumes additive changes.
 
 ## Shape
 

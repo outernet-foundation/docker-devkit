@@ -1,4 +1,4 @@
-# stack-toolkit
+# docker-devkit
 
 Docker-stack lifecycle commands — `up`, `down`, `build` — with a native/consumer split. A repo that authors its own stack (Dockerfiles + `compose.bake.yml`) uses the native mode: multi-file compose assembly, per-service SHA injection, `.env.lock` resolution. A consumer repo that OCI-includes an already-baked upstream stack uses the same commands as a thin wrapper: single-graph, `.env`-only, no build path.
 
@@ -32,10 +32,10 @@ Install from PyPI and use its entry points:
 
 ```toml
 [project]
-dependencies = ["stack-toolkit>=0.1.0"]
+dependencies = ["docker-devkit>=0.1.0"]
 ```
 
-`bashrun` resolves transitively from PyPI. To test an unreleased change, pin the repo at a git ref in a scratch branch instead (`stack-toolkit = { git = "…", rev = "<sha>" }` under `[tool.uv.sources]`) and drop the pin when the release lands.
+`bashrun` resolves transitively from PyPI. To test an unreleased change, pin the repo at a git ref in a scratch branch instead (`docker-devkit = { git = "…", rev = "<sha>" }` under `[tool.uv.sources]`) and drop the pin when the release lands.
 
 ## Development
 
