@@ -20,9 +20,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-up = "stack_lifecycle.up:app"
-down = "stack_lifecycle.down:app"
-build = "stack_lifecycle.build_docker:app"
+up = "stack_toolkit.up:app"
+down = "stack_toolkit.down:app"
+build = "stack_toolkit.build_docker:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stack_toolkit"]
