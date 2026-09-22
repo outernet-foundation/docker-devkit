@@ -12,4 +12,4 @@ concurrency:
 
 jobs:
   check:
-    uses: outernet-foundation/python-devkit/.github/workflows/check.yml@90141e9fc20af17afa25466c69ce4efb1bce8aba
+    uses: outernet-foundation/python-devkit/.github/workflows/check.yml@19b4656947784ce1d3225e35a96a21c45f7725f9
