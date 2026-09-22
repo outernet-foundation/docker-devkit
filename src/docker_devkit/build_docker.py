@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 import typer
 import yaml
-from bashrun import bash, bash_output
+from bashrun.bash import bash, bash_output
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from pydantic_settings import BaseSettings
 

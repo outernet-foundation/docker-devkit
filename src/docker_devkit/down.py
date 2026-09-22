@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from bashrun import bash_handoff
+from bashrun.bash import bash_handoff
 from .detect_gpu import Gpu, detect_gpu
 
 from .context_sha import compute_service_shas

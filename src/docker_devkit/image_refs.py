@@ -9,7 +9,7 @@ from itertools import starmap
 from pathlib import Path
 
 import yaml
-from bashrun import bash_output
+from bashrun.bash import bash_output
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")

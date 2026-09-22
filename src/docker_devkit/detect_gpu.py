@@ -1,7 +1,7 @@
 import shutil
 from typing import Literal, get_args
 
-from bashrun import bash_check
+from bashrun.bash import bash_check
 
 Gpu = Literal["auto", "cuda", "rocm", "none"]
 GPU_TYPES = tuple(g for g in get_args(Gpu) if g not in ("auto", "none"))
