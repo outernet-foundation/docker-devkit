@@ -31,3 +31,6 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+      - name: Ruff config drift
+        run: uvx --from python-devkit==0.1.2 sync-ruff --check

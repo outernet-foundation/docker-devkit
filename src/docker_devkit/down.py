@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from bashrun import bash_handoff
@@ -23,16 +24,18 @@ app = typer.Typer(add_completion=False)
 @app.command()
 def down(
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes."),
-    gpu: Gpu = typer.Option("auto", "--gpu", help="auto|cuda|rocm|none"),
-    compose_file: Path = typer.Option(
-        Path("compose.yml"),
-        "--compose-file",
-        help=(
-            "Base compose file. In a repo that authors its own stack (where compose.bake.yml lives) the default "
-            "compose.yml tears down the native multi-file stack. A consumer stack is torn down as the single graph "
-            "it was brought up as."
+    gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
+    compose_file: Annotated[
+        Path,
+        typer.Option(
+            "--compose-file",
+            help=(
+                "Base compose file. In a repo that authors its own stack (where compose.bake.yml lives) the default "
+                "compose.yml tears down the native multi-file stack. A consumer stack is torn down as the single graph "
+                "it was brought up as."
+            ),
         ),
-    ),
+    ] = Path("compose.yml"),
 ) -> None:
     # Mirror up: native multi-file teardown only when compose.bake.yml is present and the
     # default compose.yml was requested. A consumer stack tears down its single graph.

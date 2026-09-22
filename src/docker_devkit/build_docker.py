@@ -5,7 +5,7 @@ import os
 import platform
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import typer
 import yaml
@@ -103,18 +103,21 @@ def _load_compose(path: Path) -> dict[str, Any]:
 def build(
     upgrade: bool = typer.Option(False, "--upgrade", "-u", help="Re-resolve and rewrite base digests."),
     lock_only: bool = typer.Option(False, "--lock-only", help="Update lock file without building images."),
-    mode: Mode = typer.Option("local", "--mode", help="local: --load images; ci: --push images + registry caches."),
-    gpu: Gpu = typer.Option("auto", "--gpu", help="auto|cuda|rocm|none"),
+    mode: Annotated[
+        Mode, typer.Option("--mode", help="local: --load images; ci: --push images + registry caches.")
+    ] = "local",
+    gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
     gpu_only: bool = typer.Option(
         False, "--gpu-only", help="Build only the services suffixed for this gpu (requires a concrete --gpu)."
     ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
-    targets_opt: list[str] | None = typer.Option(
-        None, "--targets", "-t", help="Build only these services (from the selected bake file)."
-    ),
-    bake_file: Path = typer.Option(
-        DEFAULT_BAKE_FILE, "--bake-file", help="Bake file to load (e.g. compose.bake.yml or compose.zed.bake.yml)."
-    ),
+    targets_opt: Annotated[
+        list[str] | None,
+        typer.Option("--targets", "-t", help="Build only these services (from the selected bake file)."),
+    ] = None,
+    bake_file: Annotated[
+        Path, typer.Option("--bake-file", help="Bake file to load (e.g. compose.bake.yml or compose.zed.bake.yml).")
+    ] = DEFAULT_BAKE_FILE,
 ) -> None:
     run_build(
         upgrade=upgrade,

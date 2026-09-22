@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from bashrun import bash_handoff
@@ -33,18 +34,20 @@ def up(
     build: bool = typer.Option(
         False, "--build", help="Build all images locally before bringing the stack up; skips pulling"
     ),
-    gpu: Gpu = typer.Option("auto", "--gpu", help="auto|cuda|rocm|none"),
+    gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
     no_dev: bool = typer.Option(False, "--no-dev", help="Skip layering compose.dev.yml (production-shape bring-up)"),
-    compose_file: Path = typer.Option(
-        Path("compose.yml"),
-        "--compose-file",
-        help=(
-            "Base compose file. In a repo that authors its own images (where compose.bake.yml lives) the default "
-            "compose.yml triggers the native multi-file assembly. A consumer stack — a repo whose compose.yml "
-            "OCI-pulls an already-baked upstream artifact and layers on top — is run as the complete graph with "
-            "only --env-file .env."
+    compose_file: Annotated[
+        Path,
+        typer.Option(
+            "--compose-file",
+            help=(
+                "Base compose file. In a repo that authors its own images (where compose.bake.yml lives) the default "
+                "compose.yml triggers the native multi-file assembly. A consumer stack — a repo whose compose.yml "
+                "OCI-pulls an already-baked upstream artifact and layers on top — is run as the complete graph with "
+                "only --env-file .env."
+            ),
         ),
-    ),
+    ] = Path("compose.yml"),
 ) -> None:
     # A repo that authors its own stack carries compose.bake.yml and builds its own images,
     # so the default compose.yml means the native multi-file stack (postgres + gpu + dev layers,
