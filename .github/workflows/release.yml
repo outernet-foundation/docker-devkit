@@ -16,10 +16,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Workaround: fetch-tags is broken with shallow clones
-      - run: git fetch --tags origin
-
-      - uses: astral-sh/setup-uv@v7
-
-      - name: Publish
-        run: uvx --from release-devkit==0.1.3 publish-packages --config publish-config.json
+      - uses: outernet-foundation/release-devkit/.github/actions/publish@098b8e918c50397fef2f6d7ed1bf2452c16267d6
