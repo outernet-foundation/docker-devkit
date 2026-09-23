@@ -89,9 +89,14 @@ def run_build(
         "".join(f"{key}={value}\n" for key, value in sorted(service_shas.items())), encoding="utf-8"
     )
 
-    # Read bake, compose, and lock files
+    # Read bake, compose, and lock files. A bake-only repo (cross-builds images
+    # from a bake file, no local compose graph) has no root compose file; the
+    # only downstream consumers of compose_data are the include merge and the
+    # third-party x-image-ref scan, both empty-safe.
     bake_data: dict[str, Any] = yaml.safe_load(bake_file.read_text(encoding="utf-8"))
-    compose_data: dict[str, Any] = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    compose_data: dict[str, Any] = (
+        yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8")) if COMPOSE_FILE.exists() else {}
+    )
     for include in compose_data.pop("include", []):
         include_path = COMPOSE_FILE.parent / (include if isinstance(include, str) else include["path"])
         included: dict[str, Any] = yaml.safe_load(include_path.read_text(encoding="utf-8"))
