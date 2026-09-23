@@ -6,17 +6,6 @@ VALID_AUTH_MODES = ("keycloak", "disabled")
 DEFAULT_AUTH_MODE = "keycloak"
 
 
-def parse_env_file(path: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        result[key.strip()] = value.strip().strip("'\"")
-    return result
-
-
 def resolve_auth_mode(env_file: Path) -> str:
     file_values = parse_env_file(env_file)
     public_url = environ.get("PUBLIC_URL") or file_values.get("PUBLIC_URL")
@@ -37,3 +26,14 @@ def resolve_auth_mode(env_file: Path) -> str:
         )
 
     return auth_mode
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip().strip("'\"")
+    return result

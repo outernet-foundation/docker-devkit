@@ -13,11 +13,6 @@ ENV_FILE = Path(".env")
 LOCK_FILE = Path(".env.lock")
 BAKE_FILE = Path("compose.bake.yml")
 
-
-def _resolve_service_shas() -> None:
-    os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
-
-
 app = typer.Typer(add_completion=False)
 
 
@@ -53,7 +48,7 @@ def down(
     resolve_auth_mode(ENV_FILE)
 
     if BAKE_FILE.exists():
-        _resolve_service_shas()
+        os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
 
     if native:
         compose_files = (

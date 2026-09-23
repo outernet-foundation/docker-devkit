@@ -76,6 +76,17 @@ class VersionCoupling:
     sites: tuple[VersionSite, ...]
 
 
+def unpinned_references(root: Path) -> list[str]:
+    return [
+        occurrence.reference
+        for occurrence in collect_repo_references(root)
+        if "/" in (reference := strip_build_args(occurrence.reference))
+        and not BUILD_ARG_PATTERN.search(occurrence.reference)
+        and ":" not in (tail := reference[reference.rfind("/") + 1 :])
+        and "@" not in tail
+    ]
+
+
 def collect_repo_references(
     root: Path,
     compose_glob: str = "compose*.yml",
@@ -121,6 +132,27 @@ def collect_repo_references(
     )
 
 
+def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) -> list[str]:
+    return [
+        f"{coupling.name}: {site.description} at {path}: expected {expected}, found {found}"
+        for coupling in couplings
+        for expected in [re.sub(r"^[^0-9]+", "", _pyproject_value(root, coupling.pyproject_key)).split(",")[0].strip()]
+        for site in coupling.sites
+        for path in sorted(root.glob(site.glob)) or [Path(site.glob)]
+        for found in [_site_version(path, site)]
+        if found != expected
+    ]
+
+
+def resolve_remote_digest(reference: str) -> str:
+    print(f"Resolving digest for: {reference}")
+    output = bash_output(f"docker buildx imagetools inspect {shlex.quote(reference)}")
+    match = DIGEST_PATTERN.search(output)
+    if match is None:
+        raise RuntimeError(f"Could not parse digest for image reference: {reference}")
+    return match.group(1)
+
+
 def compose_service_refs(document: object) -> list[ImageReference]:
     return [
         ImageReference(service_name, service.image_ref)
@@ -129,39 +161,8 @@ def compose_service_refs(document: object) -> list[ImageReference]:
     ]
 
 
-def bake_base_image_refs(document: object) -> list[ImageReference]:
-    return list(starmap(ImageReference, BakeDocument.model_validate(document).base_images.items()))
-
-
-def _load_yaml_document(path: Path) -> object:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
 def strip_build_args(reference: str) -> str:
     return BUILD_ARG_PATTERN.sub("", reference).strip()
-
-
-def unpinned_references(root: Path) -> list[str]:
-    return [
-        occurrence.reference
-        for occurrence in collect_repo_references(root)
-        if "/" in (reference := strip_build_args(occurrence.reference))
-        and not BUILD_ARG_PATTERN.search(occurrence.reference)
-        and ":" not in (tail := reference[reference.rfind("/") + 1 :])
-        and "@" not in tail
-    ]
-
-
-def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) -> list[str]:
-    return [
-        f"{coupling.name}: {site.description} at {path}: expected {expected}, found {found}"
-        for coupling in couplings
-        for expected in [_declared_version(_pyproject_value(root, coupling.pyproject_key))]
-        for site in coupling.sites
-        for path in _site_paths(root, site)
-        for found in [_site_version(path, site)]
-        if found != expected
-    ]
 
 
 def _pyproject_value(root: Path, dotted_key: str) -> str:
@@ -175,33 +176,27 @@ def _pyproject_value(root: Path, dotted_key: str) -> str:
     return value
 
 
-def _declared_version(specifier: str) -> str:
-    return re.sub(r"^[^0-9]+", "", specifier).split(",")[0].strip()
-
-
-def _site_paths(root: Path, site: VersionSite) -> list[Path]:
-    return sorted(root.glob(site.glob)) or [Path(site.glob)]
-
-
 def _site_version(path: Path, site: VersionSite) -> str:
     if not path.exists():
         return MISSING_VERSION
-    haystack = _bake_base_image(path, site.base_image) if site.base_image else path.read_text(encoding="utf-8")
+    if site.base_image:
+        haystack = next(
+            (
+                reference.reference
+                for reference in bake_base_image_refs(_load_yaml_document(path))
+                if reference.name == site.base_image
+            ),
+            "",
+        )
+    else:
+        haystack = path.read_text(encoding="utf-8")
     match = re.search(site.pattern, haystack)
     return match.group(1) if match else MISSING_VERSION
 
 
-def _bake_base_image(path: Path, key: str) -> str:
-    return next(
-        (reference.reference for reference in bake_base_image_refs(_load_yaml_document(path)) if reference.name == key),
-        "",
-    )
+def bake_base_image_refs(document: object) -> list[ImageReference]:
+    return list(starmap(ImageReference, BakeDocument.model_validate(document).base_images.items()))
 
 
-def resolve_remote_digest(reference: str) -> str:
-    print(f"Resolving digest for: {reference}")
-    output = bash_output(f"docker buildx imagetools inspect {shlex.quote(reference)}")
-    match = DIGEST_PATTERN.search(output)
-    if match is None:
-        raise RuntimeError(f"Could not parse digest for image reference: {reference}")
-    return match.group(1)
+def _load_yaml_document(path: Path) -> object:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
