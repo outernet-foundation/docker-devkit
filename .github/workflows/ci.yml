@@ -12,4 +12,15 @@ concurrency:
 
 jobs:
   check:
-    uses: outernet-foundation/python-devkit/.github/workflows/check.yml@19b4656947784ce1d3225e35a96a21c45f7725f9
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Preflight
+        run: uvx --from python-devkit==0.1.5 preflight-python
