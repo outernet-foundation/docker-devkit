@@ -19,6 +19,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       # Workaround: fetch-tags is broken with shallow clones
       - run: git fetch --tags origin
