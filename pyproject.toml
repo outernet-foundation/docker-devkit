@@ -23,6 +23,7 @@ build-backend = "hatchling.build"
 up = "docker_devkit.up:app"
 down = "docker_devkit.down:app"
 build = "docker_devkit.build_docker:app"
+generate-score = "docker_devkit.score_generate:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docker_devkit"]
