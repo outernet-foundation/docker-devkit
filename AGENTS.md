@@ -12,13 +12,14 @@ Publishing rides `release.yml`, triggered by a successful CI run on a `main` pus
 
 ## Shape
 
-Entry points (`[project.scripts]`): `up` → `up.py:app`, `down` → `down.py:app`, `build` → `build_docker.py:app`. All accept `--help`.
+Entry points (`[project.scripts]`): `up` → `up.py:app`, `down` → `down.py:app`, `build` → `build_docker.py:app`, `generate-score` → `score_generate.py:app`. All accept `--help`.
 
 | Module | Role |
 |---|---|
 | `up.py` | `docker compose up`. Flags: `--attached`/`-a`, `--quiet-pull`/`-q`, `--build`, `--gpu auto\|cuda\|rocm\|none`, `--no-dev`, `--compose-file`. |
 | `down.py` | `docker compose down`. Flags: `--volumes`/`-v` (also removes named volumes), `--gpu`, `--compose-file`. |
 | `build_docker.py` | `run_build()` + the `build` command — cross-builds all images per `compose.bake.yml`, writes `.env.lock` (third-party pulled digests) and `.env.shas` (locally-built `tree-<hash>` tags). |
+| `score_generate.py` | `generate-score` — deterministic Score-manifest generation from a consumer's `score/` sources: `${ALL_CAPS}` placeholder expansion into tempdir-rendered workload copies, idempotent `score-compose`/`score-k8s` init (state preserved across runs), and a determinism suite (document sort, state-path normalisation, 0644 modes, LF newlines). Consumer policy — workloads, provisioners, patch templates, output paths, storage classes, publishes, tool versions — is declared in the consumer's root `pyproject.toml` under `[tool.docker-devkit.generate-score]` (`ScoreConfig`); `load_score_config()` reads it, `ensure_score_tools()` fetches the pinned score-compose/score-k8s release binaries (for CI staleness gates). `--local` writes the k8s artifact to the configured gitignored local path with the local storage class. |
 | `detect_gpu.py` | `detect_gpu()` → `cuda`/`rocm`/`none` from host devices; the `Gpu` literal. |
 | `modes.py` | `resolve_auth_mode()` — validates `PUBLIC_URL` + `AUTH_MODE` from `.env`, rejecting `keycloak` over cleartext `http://`. |
 | `context_sha.py` | `compute_service_shas()` — per-service `tree-<hash>` image tags over the `.dockerignore`-allowlisted git tree. |

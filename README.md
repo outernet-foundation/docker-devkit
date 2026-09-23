@@ -24,6 +24,8 @@ uv run down                    # docker compose down
 uv run down -v                 # also remove named volumes
 uv run build                   # cross-build all images per compose.bake.yml
 uv run build --lock-only       # refresh .env.lock without building
+uv run generate-score          # regenerate Score compose/k8s manifests per [tool.docker-devkit.generate-score]
+uv run generate-score --local  # local-cluster variant (local storage class, gitignored output)
 ```
 
 ## Consuming from another repo
