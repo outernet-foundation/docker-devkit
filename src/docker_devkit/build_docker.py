@@ -51,11 +51,8 @@ def build(
     no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
     targets_opt: Annotated[
         list[str] | None,
-        typer.Option("--targets", "-t", help="Build only these services (from the selected bake file)."),
+        typer.Option("--targets", "-t", help="Build only these services (from compose.bake.yml)."),
     ] = None,
-    bake_file: Annotated[
-        Path, typer.Option("--bake-file", help="Bake file to load (e.g. compose.bake.yml or compose.zed.bake.yml).")
-    ] = DEFAULT_BAKE_FILE,
 ) -> None:
     run_build(
         upgrade=upgrade,
@@ -65,7 +62,6 @@ def build(
         gpu_only=gpu_only,
         no_cache=no_cache,
         targets_opt=targets_opt,
-        bake_file=bake_file,
     )
 
 
@@ -78,22 +74,17 @@ def run_build(
     gpu_only: bool = False,
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
-    bake_file: Path = DEFAULT_BAKE_FILE,
 ) -> None:
-    service_shas = compute_service_shas(Path.cwd(), bake_file)
+    service_shas = compute_service_shas(Path.cwd(), DEFAULT_BAKE_FILE)
     os.environ.update(service_shas)
 
-    # Tags of the images built this run — the local analog of .env.lock's pulled
-    # digests — so raw `docker compose` can resolve the compose graph's ${*_SHA} holes.
+    # Tags of the images built this run — the local analog of .env.lock's pulled digests
     ENV_SHAS_FILE.write_text(
         "".join(f"{key}={value}\n" for key, value in sorted(service_shas.items())), encoding="utf-8"
     )
 
-    # Read bake, compose, and lock files. A bake-only repo (cross-builds images
-    # from a bake file, no local compose graph) has no root compose file; the
-    # only downstream consumers of compose_data are the include merge and the
-    # third-party x-image-ref scan, both empty-safe.
-    bake_data: dict[str, Any] = yaml.safe_load(bake_file.read_text(encoding="utf-8"))
+    # A bake-only repo has no compose.yml; every consumer of compose_data is empty-safe
+    bake_data: dict[str, Any] = yaml.safe_load(DEFAULT_BAKE_FILE.read_text(encoding="utf-8"))
     compose_data: dict[str, Any] = (
         yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8")) if COMPOSE_FILE.exists() else {}
     )
@@ -207,7 +198,7 @@ def run_build(
     # Bake images
     command = [
         "docker buildx bake",
-        f"-f {bake_file}",
+        f"-f {DEFAULT_BAKE_FILE}",
         f"--metadata-file {METADATA_PATH}",
         "--progress auto",
         "--provenance=false",
@@ -218,7 +209,7 @@ def run_build(
     # Sanity check
     baked_images: dict[str, Any] = json.loads(METADATA_PATH.read_text()) if METADATA_PATH.exists() else {}
     if not set(targets) <= baked_images.keys():
-        raise RuntimeError("Baked images do not match target images; something went wrong during the bake.")
+        raise RuntimeError("Bake output does not cover the requested targets")
 
 
 # Vibe code - Gemini 3
@@ -240,10 +231,7 @@ def _check_gc_limits(min_gb: int = 60):
     raw = data.get("builder", {}).get("gc", {}).get("defaultKeepStorage")
     if not raw:
         sample = json.dumps({"builder": {"gc": {"defaultKeepStorage": f"{min_gb}GB"}}}, indent=2)
-        raise RuntimeError(
-            f"Missing 'builder.gc.defaultKeepStorage' in {config}; Docker's default is too low for GPU builds "
-            f"(need >= {min_gb}GB). Add the following (merging into any existing keys) and restart Docker:\n\n{sample}"
-        )
+        raise RuntimeError(f"builder.gc.defaultKeepStorage missing in {config}; need >= {min_gb}GB:\n\n{sample}")
 
     m = re.match(r"^(\d+(?:\.\d+)?)\s*([TGMK]i?B)?$", str(raw), re.IGNORECASE)
     if not m:
@@ -254,9 +242,7 @@ def _check_gc_limits(min_gb: int = 60):
     val = float(m.group(1)) * mult.get(unit, 1 / 1024**3)
 
     if val < min_gb:
-        raise RuntimeError(
-            f"UNSAFE GC LIMIT: {val:.1f}GB in {config} (Required: {min_gb}GB). RESTART DOCKER AFTER FIXING."
-        )
+        raise RuntimeError(f"Docker GC limit {val:.1f}GB in {config} is below the required {min_gb}GB")
 
     print(f"    [OK] Docker GC Limit verified: {val:.1f}GB")
 
