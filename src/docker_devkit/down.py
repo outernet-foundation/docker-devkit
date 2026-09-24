@@ -7,11 +7,11 @@ from bashrun.bash import bash_handoff
 from .detect_gpu import Gpu, detect_gpu
 
 from .context_sha import compute_service_shas
+from .lifecycle import BAKE_FILE, enforce_bake_declaration, expand_compose_files, load_lifecycle_config
 from .modes import resolve_auth_mode
 
 ENV_FILE = Path(".env")
 LOCK_FILE = Path(".env.lock")
-BAKE_FILE = Path("compose.bake.yml")
 
 app = typer.Typer(add_completion=False)
 
@@ -20,27 +20,15 @@ app = typer.Typer(add_completion=False)
 def down(
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes."),
     gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
-    compose_file: Annotated[
-        Path,
-        typer.Option(
-            "--compose-file",
-            help=(
-                "Base compose file. In a repo that authors its own stack (where compose.bake.yml lives) the default "
-                "compose.yml tears down the native multi-file stack. A consumer stack is torn down as the single graph "
-                "it was brought up as."
-            ),
-        ),
-    ] = Path("compose.yml"),
 ) -> None:
-    # Mirror up: native multi-file teardown only when compose.bake.yml is present and the
-    # default compose.yml was requested. A consumer stack tears down its single graph.
-    native = compose_file == Path("compose.yml") and BAKE_FILE.exists()
+    config = load_lifecycle_config(Path.cwd())
+    enforce_bake_declaration(Path.cwd(), config)
 
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found")
 
-    if native and not LOCK_FILE.exists():
-        raise RuntimeError("No lock file found; run 'uv run build --lock-only' first")
+    if not LOCK_FILE.exists():
+        raise RuntimeError("No .env.lock found; run 'uv run build --lock-only' in the repo that authors the images")
 
     if gpu == "auto":
         gpu = detect_gpu()
@@ -50,25 +38,18 @@ def down(
     if BAKE_FILE.exists():
         os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
 
-    if native:
-        compose_files = (
-            "-f compose.yml "
-            "-f compose.postgres.yml "
-            f"{f'-f compose.{gpu}.yml ' if gpu != 'none' else ''}"
-            "-f compose.dev.yml "  # Include so containers from a prior dev bring-up get torn down even with --no-dev later
-        )
-    else:
-        compose_files = f"-f {compose_file} "
+    # Always layer the dev overlay so containers from a prior --dev bring-up get torn down too
+    compose_files = expand_compose_files(config, gpu, include_dev=True)
+    if not compose_files:
+        raise RuntimeError("No compose files declared; a builds-only repo has no stack to tear down")
 
-    # .env.lock keeps compose from erroring on missing stack-internal vars; it only
-    # exists in the native repo, so a consumer stack tears down with .env alone.
-    lock_flag = f"--env-file {LOCK_FILE} " if LOCK_FILE.exists() else ""
+    files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
     command = (
         "docker compose "
-        f"{compose_files}"
+        f"{files_args} "
         "--profile keycloak "  # Always include so any keycloak containers from a previous AUTH_MODE=keycloak run get torn down
         "--env-file .env "
-        f"{lock_flag}"
+        f"--env-file {LOCK_FILE} "
         "down --remove-orphans"
     )
 

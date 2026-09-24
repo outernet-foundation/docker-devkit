@@ -1,7 +1,7 @@
 [project]
 name = "docker-devkit"
 version = "0.0.0.dev0"
-description = "Docker-stack lifecycle commands (up/down/build) with a native/consumer split"
+description = "Docker-stack lifecycle commands (up/down/build) driven by a pyproject-declared compose assembly"
 requires-python = ">=3.13"
 dependencies = [
     "bashrun>=0.1.0",

@@ -8,11 +8,11 @@ from .detect_gpu import Gpu, detect_gpu
 
 from .build_docker import run_build
 from .context_sha import compute_service_shas
+from .lifecycle import BAKE_FILE, enforce_bake_declaration, expand_compose_files, load_lifecycle_config
 from .modes import resolve_auth_mode
 
 ENV_FILE = Path(".env")
 LOCK_FILE = Path(".env.lock")
-BAKE_FILE = Path("compose.bake.yml")
 
 app = typer.Typer(add_completion=False)
 
@@ -30,38 +30,26 @@ def up(
         False, "--build", help="Build all images locally before bringing the stack up; skips pulling"
     ),
     gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
-    no_dev: bool = typer.Option(False, "--no-dev", help="Skip layering compose.dev.yml (production-shape bring-up)"),
-    compose_file: Annotated[
-        Path,
-        typer.Option(
-            "--compose-file",
-            help=(
-                "Base compose file. In a repo that authors its own images (where compose.bake.yml lives) the default "
-                "compose.yml triggers the native multi-file assembly. A consumer stack — a repo whose compose.yml "
-                "OCI-pulls an already-baked upstream artifact and layers on top — is run as the complete graph with "
-                "only --env-file .env."
-            ),
-        ),
-    ] = Path("compose.yml"),
+    dev: bool = typer.Option(
+        False,
+        "--dev",
+        help="Layer the declared dev overlay (compose.dev.yml shape) over the production stack for bind-mount/debug bring-up.",
+    ),
 ) -> None:
-    # A repo that authors its own stack carries compose.bake.yml and builds its own images,
-    # so the default compose.yml means the native multi-file stack (postgres + gpu + dev layers,
-    # per-service SHA injection, .env.lock). A consumer repo has no bake file: its
-    # --compose-file is the whole graph (the upstream stack arrives baked via OCI include or a
-    # sibling-checkout include), so SHA resolution and .env.lock don't apply.
-    native = compose_file == Path("compose.yml") and BAKE_FILE.exists()
+    config = load_lifecycle_config(Path.cwd())
+    enforce_bake_declaration(Path.cwd(), config)
+
+    if dev and (config is None or config.dev_file is None):
+        raise RuntimeError("--dev requires a dev_file in [tool.docker-devkit.lifecycle]")
 
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found; create one first (e.g., copy .env.example)")
 
-    if native and not LOCK_FILE.exists():
-        raise RuntimeError("No lock file found; run 'uv run build --lock-only' first")
+    if not LOCK_FILE.exists():
+        raise RuntimeError("No .env.lock found; run 'uv run build --lock-only' in the repo that authors the images")
 
-    if build and not native:
-        raise typer.BadParameter(
-            "--build is only supported for the native stack (compose.bake.yml present); a consumer stack "
-            "consumes images from an OCI-included upstream artifact and has no local build graph."
-        )
+    if build and not BAKE_FILE.exists():
+        raise typer.BadParameter("--build requires a compose.bake.yml")
 
     if gpu == "auto":
         gpu = detect_gpu()
@@ -74,24 +62,17 @@ def up(
     if BAKE_FILE.exists():
         os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
 
+    compose_files = expand_compose_files(config, gpu, include_dev=dev)
+    if not compose_files:
+        raise RuntimeError("No compose files declared; a builds-only repo has no stack to bring up")
+
+    files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
     profile_flag = "--profile keycloak " if auth_mode == "keycloak" else ""
-    if native:
-        gpu_file = f"-f compose.{gpu}.yml " if gpu != "none" else ""
-        dev_file = "" if no_dev else "-f compose.dev.yml "
-        compose_args = (
-            f"-f compose.yml -f compose.postgres.yml {gpu_file}{dev_file}{profile_flag}"
-            f"--env-file .env --env-file {LOCK_FILE}"
-        )
-    else:
-        lock_flag = f"--env-file {LOCK_FILE} " if LOCK_FILE.exists() else ""
-        compose_args = f"-f {compose_file} {profile_flag}--env-file .env {lock_flag}".rstrip()
+    compose_args = f"{files_args} {profile_flag}--env-file .env --env-file {LOCK_FILE}"
 
     up_command = f"docker compose {compose_args} up"
     if not build:
-        # tree-<sha> tags are immutable (derived from dockerignore-allowlisted
-        # context), so a local hit is byte-identical to what the registry would
-        # serve. --pull missing skips locally-present tags, avoiding hard errors
-        # on images built locally but not yet pushed.
+        # tree-<sha> tags are content-addressed and may not be pushed, so pull only what is missing locally
         up_command += " --pull missing"
         if quiet_pull:
             up_command += " --quiet-pull"
