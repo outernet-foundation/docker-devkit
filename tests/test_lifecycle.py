@@ -7,6 +7,8 @@ from docker_devkit.lifecycle import (
     enforce_bake_declaration,
     expand_compose_files,
     load_lifecycle_config,
+    resolve_lock,
+    resolve_manifest,
 )
 
 
@@ -101,14 +103,64 @@ class TestExpandComposeFiles:
         assert expand_compose_files(None, "cuda", include_dev=True) == [Path("compose.yml")]
 
 
+class TestResolveManifest:
+    def test_prefers_images_manifest(self, tmp_path: Path):
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+        (tmp_path / "compose.bake.yml").write_text("", encoding="utf-8")
+
+        assert resolve_manifest(tmp_path) == tmp_path / "workloads" / "images.yml"
+
+    def test_falls_back_to_legacy_bake_file(self, tmp_path: Path):
+        (tmp_path / "compose.bake.yml").write_text("", encoding="utf-8")
+
+        assert resolve_manifest(tmp_path) == tmp_path / "compose.bake.yml"
+
+    def test_returns_none_without_manifest(self, tmp_path: Path):
+        assert resolve_manifest(tmp_path) is None
+
+
+class TestResolveLock:
+    def test_images_manifest_pairs_with_images_lock(self, tmp_path: Path):
+        manifest = tmp_path / "workloads" / "images.yml"
+
+        assert resolve_lock(tmp_path, manifest) == tmp_path / "workloads" / "images.lock"
+
+    def test_legacy_manifest_pairs_with_legacy_lock(self, tmp_path: Path):
+        manifest = tmp_path / "compose.bake.yml"
+
+        assert resolve_lock(tmp_path, manifest) == tmp_path / ".env.lock"
+
+    def test_without_manifest_prefers_existing_lock(self, tmp_path: Path):
+        (tmp_path / ".env.lock").write_text("", encoding="utf-8")
+
+        assert resolve_lock(tmp_path, None) == tmp_path / ".env.lock"
+
+    def test_without_manifest_defaults_to_images_lock(self, tmp_path: Path):
+        assert resolve_lock(tmp_path, None) == tmp_path / "workloads" / "images.lock"
+
+
 class TestEnforceBakeDeclaration:
+    def test_accepts_images_manifest_with_declaration(self, tmp_path: Path):
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+
+        enforce_bake_declaration(tmp_path, LifecycleConfig())
+
     def test_accepts_bake_with_declaration(self, tmp_path: Path):
         (tmp_path / "compose.bake.yml").write_text("", encoding="utf-8")
 
         enforce_bake_declaration(tmp_path, LifecycleConfig())
 
-    def test_accepts_missing_bake_without_declaration(self, tmp_path: Path):
+    def test_accepts_missing_manifest_without_declaration(self, tmp_path: Path):
         enforce_bake_declaration(tmp_path, None)
+
+    def test_rejects_images_manifest_without_declaration(self, tmp_path: Path):
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="lifecycle"):
+            enforce_bake_declaration(tmp_path, None)
 
     def test_rejects_bake_without_declaration(self, tmp_path: Path):
         (tmp_path / "compose.bake.yml").write_text("", encoding="utf-8")

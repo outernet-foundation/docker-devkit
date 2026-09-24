@@ -7,9 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .detect_gpu import Gpu
 
-BAKE_FILE = Path("compose.bake.yml")
 DEFAULT_COMPOSE_FILE = Path("compose.yml")
 GPU_PLACEHOLDER = "{gpu}"
+
+# The image manifest and its lock are a named pair living in the same directory. The
+# legacy names keep resolving so a repo can upgrade the devkit before moving its files.
+MANIFEST_CANDIDATES = (Path("workloads/images.yml"), Path("compose.bake.yml"))
+MANIFEST_LOCK_PAIR = {"images.yml": "images.lock", "compose.bake.yml": ".env.lock"}
+LOCK_CANDIDATES = (Path("workloads/images.lock"), Path(".env.lock"))
 
 
 class LifecycleConfig(BaseModel):
@@ -30,10 +35,28 @@ def load_lifecycle_config(root: Path) -> LifecycleConfig | None:
     return LifecycleConfig.model_validate(section)
 
 
+def resolve_manifest(root: Path) -> Path | None:
+    return next((root / candidate for candidate in MANIFEST_CANDIDATES if (root / candidate).exists()), None)
+
+
+def require_manifest(root: Path) -> Path:
+    manifest = resolve_manifest(root)
+    if manifest is None:
+        raise RuntimeError(f"No image manifest found; {MANIFEST_CANDIDATES[0]} is the canonical name")
+    return manifest
+
+
+def resolve_lock(root: Path, manifest: Path | None) -> Path:
+    if manifest is not None:
+        return manifest.parent / MANIFEST_LOCK_PAIR[manifest.name]
+    existing = next((root / candidate for candidate in LOCK_CANDIDATES if (root / candidate).exists()), None)
+    return existing if existing is not None else root / LOCK_CANDIDATES[0]
+
+
 def enforce_bake_declaration(root: Path, config: LifecycleConfig | None) -> None:
-    if config is None and (root / BAKE_FILE).exists():
+    if config is None and any((root / candidate).exists() for candidate in MANIFEST_CANDIDATES):
         raise RuntimeError(
-            f"{BAKE_FILE} present without [tool.docker-devkit.lifecycle]; declare the table or rename the file"
+            "image manifest present without [tool.docker-devkit.lifecycle]; declare the table or rename the file"
         )
 
 

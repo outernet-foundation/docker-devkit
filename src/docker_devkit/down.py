@@ -8,11 +8,16 @@ from .detect_gpu import Gpu, detect_gpu
 
 from .context_sha import compute_service_shas
 from .documents import parse_bake
-from .lifecycle import BAKE_FILE, enforce_bake_declaration, expand_compose_files, load_lifecycle_config
+from .lifecycle import (
+    enforce_bake_declaration,
+    expand_compose_files,
+    load_lifecycle_config,
+    resolve_lock,
+    resolve_manifest,
+)
 from .modes import resolve_auth_mode
 
 ENV_FILE = Path(".env")
-LOCK_FILE = Path(".env.lock")
 
 app = typer.Typer(add_completion=False)
 
@@ -22,22 +27,27 @@ def down(
     volumes: bool = typer.Option(False, "--volumes", "-v", help="Remove named volumes."),
     gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
 ) -> None:
-    config = load_lifecycle_config(Path.cwd())
-    enforce_bake_declaration(Path.cwd(), config)
+    root = Path.cwd()
+    config = load_lifecycle_config(root)
+    enforce_bake_declaration(root, config)
+    manifest = resolve_manifest(root)
+    lock_file = resolve_lock(root, manifest)
 
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found")
 
-    if not LOCK_FILE.exists():
-        raise RuntimeError("No .env.lock found; run 'uv run build --lock-only' in the repo that authors the images")
+    if not lock_file.exists():
+        raise RuntimeError(
+            f"No image lock at {lock_file}; run 'uv run build --lock-only' in the repo that authors the images"
+        )
 
     if gpu == "auto":
         gpu = detect_gpu()
 
     resolve_auth_mode(ENV_FILE)
 
-    if BAKE_FILE.exists():
-        os.environ.update(compute_service_shas(Path.cwd(), parse_bake(BAKE_FILE)))
+    if manifest is not None:
+        os.environ.update(compute_service_shas(root, parse_bake(manifest)))
 
     # Always layer the dev overlay so containers from a prior --dev bring-up get torn down too
     compose_files = expand_compose_files(config, gpu, include_dev=True)
@@ -48,9 +58,10 @@ def down(
     command = (
         "docker compose "
         f"{files_args} "
+        f"--project-directory {root} "
         "--profile keycloak "  # Always include so any keycloak containers from a previous AUTH_MODE=keycloak run get torn down
         "--env-file .env "
-        f"--env-file {LOCK_FILE} "
+        f"--env-file {lock_file} "
         "down --remove-orphans"
     )
 

@@ -109,8 +109,11 @@ def test_load_score_config_reads_consumer_table(tmp_path: Path) -> None:
     assert config.workloads == ["api.yaml"]
     assert config.project_name == "placeframe"
     assert config.publishes == ["8000:api:8000"]
-    assert config.compose_output == Path("compose.yaml")
-    assert config.k8s_output == Path("deploy") / "manifests.yaml"
+    assert config.score_dir == Path("stack/score")
+    assert config.bake_file == Path("workloads/images.yml")
+    assert config.compose_output == Path("stack/generated/compose/compose.yaml")
+    assert config.k8s_output == Path("stack/generated/k8s/manifests.yaml")
+    assert config.k8s_state == Path("stack/generated/k8s/.score-k8s")
     assert config.score_k8s_version == "0.15.0"
     assert config.score_compose_version == "0.42.0"
 

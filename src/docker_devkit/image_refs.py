@@ -70,30 +70,39 @@ def unpinned_references(root: Path) -> list[str]:
     ]
 
 
-def declared_references(root: Path, bake_glob: str = "compose*.bake.yml") -> list[ImageReference]:
-    return [reference for path in sorted(root.glob(bake_glob)) for reference in bake_base_image_refs(parse_bake(path))]
+def declared_references(
+    root: Path, bake_globs: tuple[str, ...] = ("workloads/images.yml", "compose*.bake.yml")
+) -> list[ImageReference]:
+    return [
+        reference
+        for bake_glob in bake_globs
+        for path in sorted(root.glob(bake_glob))
+        for reference in bake_base_image_refs(parse_bake(path))
+    ]
 
 
 def stray_references(
     root: Path,
-    dockerfile_glob: str = "docker/*/Dockerfile*",
-    image_glob: str = "score/*.yaml",
+    dockerfile_globs: tuple[str, ...] = ("workloads/*/Dockerfile*", "docker/*/Dockerfile*"),
+    image_globs: tuple[str, ...] = ("stack/score/*.yaml", "score/*.yaml"),
 ) -> list[ImageReference]:
+    dockerfile_paths = [path for dockerfile_glob in dockerfile_globs for path in sorted(root.glob(dockerfile_glob))]
+    image_paths = [path for image_glob in image_globs for path in sorted(root.glob(image_glob))]
     return (
         [
             ImageReference("", match.group(1))
-            for path in sorted(root.glob(dockerfile_glob))
+            for path in dockerfile_paths
             for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
         + [
             ImageReference("", match.group(1))
-            for path in sorted(root.glob(dockerfile_glob))
+            for path in dockerfile_paths
             for match in COPY_FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
             if "/" in match.group(1)
         ]
         + [
             ImageReference("", match.group(1))
-            for path in sorted(root.glob(image_glob))
+            for path in image_paths
             for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
     )

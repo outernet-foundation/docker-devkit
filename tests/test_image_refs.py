@@ -59,14 +59,21 @@ class TestBakeBaseImageRefs:
 
 
 class TestDeclaredReferences:
-    def test_should_yield_bake_declarations(self, tmp_path: Path):
+    def test_should_yield_images_manifest_declarations(self, tmp_path: Path):
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.yml").write_text(
+            "x-base-images:\n  ALPINE_IMAGE: alpine:3.20\n", encoding="utf-8"
+        )
+        assert declared_references(tmp_path) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
+
+    def test_should_yield_legacy_bake_declarations(self, tmp_path: Path):
         (tmp_path / "compose.bake.yml").write_text("x-base-images:\n  ALPINE_IMAGE: alpine:3.20\n", encoding="utf-8")
         assert declared_references(tmp_path) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
 
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
         assert declared_references(tmp_path) == []
 
-    def test_should_scan_only_bake_files(self, tmp_path: Path):
+    def test_should_scan_only_manifests(self, tmp_path: Path):
         (tmp_path / "compose.yml").write_text(
             "services:\n  minio:\n    x-image-ref: docker.io/minio/minio:latest\n", encoding="utf-8"
         )
@@ -82,16 +89,32 @@ class TestDeclaredReferences:
 
 
 class TestStrayReferences:
-    def test_should_collect_dockerfile_and_score_sources(self, tmp_path: Path):
-        docker_directory = tmp_path / "docker" / "api"
-        docker_directory.mkdir(parents=True)
-        (docker_directory / "Dockerfile").write_text(
+    def test_should_collect_workload_and_score_sources(self, tmp_path: Path):
+        workloads_directory = tmp_path / "workloads" / "api"
+        workloads_directory.mkdir(parents=True)
+        (workloads_directory / "Dockerfile").write_text(
             "FROM --platform=linux/amd64 python:3.13-slim AS base\n"
             "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/\n"
             "COPY --from=base /x /y\n"
             "RUN pip install x\n",
             encoding="utf-8",
         )
+        score_directory = tmp_path / "stack" / "score"
+        score_directory.mkdir(parents=True)
+        (score_directory / "app.provisioners.yaml").write_text(
+            "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak:26.3.5@sha256:abc\n",
+            encoding="utf-8",
+        )
+        assert stray_references(tmp_path) == [
+            ImageReference("", "python:3.13-slim"),
+            ImageReference("", "ghcr.io/astral-sh/uv:latest"),
+            ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
+        ]
+
+    def test_should_collect_legacy_layout_sources(self, tmp_path: Path):
+        docker_directory = tmp_path / "docker" / "api"
+        docker_directory.mkdir(parents=True)
+        (docker_directory / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
         score_directory = tmp_path / "score"
         score_directory.mkdir()
         (score_directory / "app.provisioners.yaml").write_text(
@@ -100,7 +123,6 @@ class TestStrayReferences:
         )
         assert stray_references(tmp_path) == [
             ImageReference("", "python:3.13-slim"),
-            ImageReference("", "ghcr.io/astral-sh/uv:latest"),
             ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
         ]
 
@@ -118,7 +140,7 @@ class TestStripBuildArgs:
 
 class TestUnpinnedReferences:
     def test_should_return_empty_when_everything_is_pinned(self, tmp_path: Path):
-        docker_directory = tmp_path / "docker" / "api"
+        docker_directory = tmp_path / "workloads" / "api"
         docker_directory.mkdir(parents=True)
         (docker_directory / "Dockerfile").write_text(
             "FROM ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv${UV_BASE_DIGEST}\n"
@@ -130,7 +152,7 @@ class TestUnpinnedReferences:
         assert unpinned_references(tmp_path) == []
 
     def test_should_flag_slash_refs_without_tag_digest_or_arg(self, tmp_path: Path):
-        docker_directory = tmp_path / "docker" / "api"
+        docker_directory = tmp_path / "workloads" / "api"
         docker_directory.mkdir(parents=True)
         (docker_directory / "Dockerfile").write_text(
             "FROM ghcr.io/outernet-foundation/mirror/docker.io/library/caddy\n", encoding="utf-8"
@@ -138,7 +160,7 @@ class TestUnpinnedReferences:
         assert unpinned_references(tmp_path) == ["ghcr.io/outernet-foundation/mirror/docker.io/library/caddy"]
 
     def test_should_ignore_stage_names_and_arg_only_refs(self, tmp_path: Path):
-        docker_directory = tmp_path / "docker" / "api"
+        docker_directory = tmp_path / "workloads" / "api"
         docker_directory.mkdir(parents=True)
         (docker_directory / "Dockerfile").write_text(
             "FROM neural-networks-base AS dev\nCOPY --from=build /x /y\n", encoding="utf-8"

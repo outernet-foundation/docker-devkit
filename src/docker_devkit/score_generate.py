@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -46,14 +47,14 @@ class ScoreConfig(BaseModel):
     project_name: str
     cloud_storage_class: str
     local_storage_class: str
-    score_dir: Path = Path("score")
-    bake_file: Path = Path("compose.bake.yml")
-    compose_output: Path = Path("compose.yaml")
-    k8s_output: Path = Path("deploy") / "manifests.yaml"
+    score_dir: Path = Path("stack/score")
+    bake_file: Path = Path("workloads/images.yml")
+    compose_output: Path = Path("stack/generated/compose/compose.yaml")
+    k8s_output: Path = Path("stack/generated/k8s/manifests.yaml")
     # --local writes here instead of the committed k8s output; consumers gitignore this path so a
     # local-only storage class cannot reach the artifact their cluster deploys.
-    k8s_local_output: Path = Path("manifests.yaml")
-    k8s_state: Path = Path(".score-k8s")
+    k8s_local_output: Path = Path("stack/generated/k8s/manifests.local.yaml")
+    k8s_state: Path = Path("stack/generated/k8s/.score-k8s")
     storage_class_var: str = "SCORE_STORAGE_CLASS"
     compose_provisioners: list[str] = Field(default_factory=list)
     compose_patch_templates: list[str] = Field(default_factory=list)
@@ -94,16 +95,17 @@ def load_score_config(root: Path) -> ScoreConfig:
 
 
 def generate(config: ScoreConfig, target: Target = "both", local: bool = False) -> None:
+    root = Path.cwd()
     # The same call up, build, and preflight make, so every image tag is a pure function of
     # committed source rather than a hand-typed value.
-    os.environ.update(compute_service_shas(Path.cwd(), parse_bake(config.bake_file)))
+    os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
 
     if target in ("both", "compose"):
-        _generate_compose(config)
+        _generate_compose(root, config)
 
     if target in ("both", "k8s"):
-        _generate_k8s(config, config.k8s_local_output if local else config.k8s_output)
+        _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output)
 
 
 def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
@@ -116,46 +118,73 @@ def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
         Path(archive).unlink()
 
 
-def _generate_compose(config: ScoreConfig) -> None:
+def _generate_compose(root: Path, config: ScoreConfig) -> None:
+    # score-compose keeps its state directory inside score_dir; the consumer gitignores it.
     _init_state(
         f"score-compose init --project {config.project_name} --no-sample",
         config.compose_provisioners,
         config.compose_patch_templates,
-        config.score_dir,
+        source_dir=root / config.score_dir,
+        working_dir=root / config.score_dir,
     )
 
+    (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
     publishes = "".join(f" --publish {publish}" for publish in config.publishes)
-    with _rendered_workloads(config) as workloads:
+    with _rendered_workloads(root, config) as workloads:
         bash(
-            f"score-compose generate {workloads} --output {config.compose_output.as_posix()}{publishes}",
-            cwd=config.score_dir,
+            f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
+            cwd=root / config.score_dir,
         )
 
 
-def _generate_k8s(config: ScoreConfig, output: Path) -> None:
-    _init_state("score-k8s init --no-sample", config.k8s_provisioners, [], config.score_dir)
+def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
+    # score-k8s writes its state directory to the .score-k8s of its cwd; running it from the
+    # generated k8s home keeps the committed state file in the generated tier while the
+    # provisioners still resolve from the authored score sources.
+    state_dir = root / config.k8s_state
+    _init_state(
+        "score-k8s init --no-sample",
+        config.k8s_provisioners,
+        [],
+        source_dir=root / config.score_dir,
+        working_dir=state_dir.parent,
+    )
 
-    (config.score_dir / output).parent.mkdir(parents=True, exist_ok=True)
+    output_path = root / output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _rendered_workloads(config) as workloads:
-        bash(f"score-k8s generate {workloads} --output {output.as_posix()}", cwd=config.score_dir)
+    with _rendered_workloads(root, config) as workloads:
+        bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
-    sort_documents(config.score_dir / output)
-    normalise_state_paths(config, config.score_dir / config.k8s_state / "state.yaml")
+    sort_documents(output_path)
+    normalise_state_paths(config, state_dir / "state.yaml")
 
 
-def _init_state(command: str, provisioners: list[str], patch_templates: list[str], score_dir: Path) -> None:
+def _init_state(
+    command: str,
+    provisioners: list[str],
+    patch_templates: list[str],
+    *,
+    source_dir: Path,
+    working_dir: Path,
+) -> None:
     # init is idempotent over an existing state directory: it rewrites the provisioner copies
     # without disturbing state. The state must survive, because score-k8s mints a random uid per
     # workload on first add and emits it as the app.kubernetes.io/instance label — discarding it
     # would change the generated manifests on every run.
-    flags = "".join(f" --provisioners ./{name}" for name in provisioners)
-    flags += "".join(f" --patch-templates ./{name}" for name in patch_templates)
-    bash(f"{command}{flags}", cwd=score_dir)
+    # Provisioner and template paths are passed relative to the working directory so no
+    # absolute machine path can reach a committed state file.
+    flags = "".join(
+        f" --provisioners {shlex.quote(os.path.relpath(source_dir / name, working_dir))}" for name in provisioners
+    )
+    flags += "".join(
+        f" --patch-templates {shlex.quote(os.path.relpath(source_dir / name, working_dir))}" for name in patch_templates
+    )
+    bash(f"{command}{flags}", cwd=working_dir)
 
 
 @contextmanager
-def _rendered_workloads(config: ScoreConfig) -> Generator[str]:
+def _rendered_workloads(root: Path, config: ScoreConfig) -> Generator[str]:
     # Workload files are Score spec documents, not Go templates, so they cannot read the
     # environment the way the provisioner files can. Expanding ${API_SHA} into a rendered copy
     # keeps one mechanism across both halves.
@@ -163,7 +192,7 @@ def _rendered_workloads(config: ScoreConfig) -> Generator[str]:
         directory = Path(temporary_directory)
 
         for name in config.workloads:
-            source = (config.score_dir / name).read_text(encoding="utf-8")
+            source = (root / config.score_dir / name).read_text(encoding="utf-8")
             (directory / name).write_text(expand_placeholders(source, name, config.bake_file), "utf-8")
 
         yield " ".join((directory / name).as_posix() for name in config.workloads)

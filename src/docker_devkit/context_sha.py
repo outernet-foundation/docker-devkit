@@ -18,6 +18,8 @@ def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
             continue
         service_dirs.add(str(PurePosixPath(config.build.dockerfile).parent))
 
+    workload_root = _workload_root(service_dirs)
+
     tree_entries = bash_output("git ls-tree -r HEAD", cwd=repo_root).splitlines()
 
     dockerignore = repo_root / ".dockerignore"
@@ -31,12 +33,12 @@ def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
         mode, _type, obj_hash = meta.split()
         allowed_entries.append((mode, obj_hash, path))
 
-    docker_prefix = "docker/"
+    workload_prefix = workload_root.as_posix() + "/" if workload_root is not None else None
     shared_entries: list[tuple[str, str, str]] = []
     per_service: dict[str, list[tuple[str, str, str]]] = {d: [] for d in service_dirs}
 
     for mode, obj_hash, path in allowed_entries:
-        if path.startswith(docker_prefix):
+        if workload_prefix is not None and path.startswith(workload_prefix):
             for service_dir in service_dirs:
                 if path.startswith(service_dir + "/"):
                     per_service[service_dir].append((mode, obj_hash, path))
@@ -57,3 +59,15 @@ def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
         result[PurePosixPath(service_dir).name.upper().replace("-", "_") + "_SHA"] = f"tree-{tree_hash}"
 
     return result
+
+
+def _workload_root(service_dirs: set[str]) -> PurePosixPath | None:
+    # The workload tree root is the single top-level directory containing every tagged
+    # service. Files under it that belong to no tagged service are excluded from every
+    # SHA: they are workload-tree content, not shared build context.
+    tops = {PurePosixPath(service_dir).parts[0] for service_dir in service_dirs if PurePosixPath(service_dir).parts}
+    if not tops:
+        return None
+    if len(tops) > 1:
+        raise RuntimeError(f"Bake services span multiple top-level directories: {sorted(tops)}")
+    return PurePosixPath(next(iter(tops)))
