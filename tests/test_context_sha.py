@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from docker_devkit.context_sha import compute_service_shas
+from docker_devkit.documents import parse_bake
 
 BAKE_CONTENT = """\
 services:
@@ -55,55 +56,55 @@ def repo(tmp_path: Path) -> Path:
 
 class TestComputeServiceShas:
     def test_should_return_deterministic_hashes(self, repo: Path):
-        shas1 = compute_service_shas(repo, repo / "compose.bake.yml")
-        shas2 = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas1 = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
+        shas2 = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         assert shas1 == shas2
 
     def test_should_have_tree_prefix(self, repo: Path):
-        shas = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         for sha in shas.values():
             assert sha.startswith("tree-")
 
     def test_should_return_only_tagged_services(self, repo: Path):
-        shas = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         assert set(shas.keys()) == {"APP_SHA", "WORKER_SHA"}
 
     def test_should_change_only_affected_service_when_service_file_changes(self, repo: Path):
-        shas_before = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_before = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         (repo / "docker" / "app" / "main.py").write_text("print('changed')")
         _commit_all(repo)
 
-        shas_after = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_after = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
         assert shas_before["APP_SHA"] != shas_after["APP_SHA"]
         assert shas_before["WORKER_SHA"] == shas_after["WORKER_SHA"]
 
     def test_should_change_all_services_when_shared_file_changes(self, repo: Path):
-        shas_before = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_before = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         (repo / "packages" / "lib.py").write_text("x = 2")
         _commit_all(repo)
 
-        shas_after = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_after = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
         assert shas_before["APP_SHA"] != shas_after["APP_SHA"]
         assert shas_before["WORKER_SHA"] != shas_after["WORKER_SHA"]
 
     def test_should_not_change_when_ignored_file_changes(self, repo: Path):
-        shas_before = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_before = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         (repo / "README.md").write_text("changed readme")
         _commit_all(repo)
 
-        shas_after = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_after = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
         assert shas_before == shas_after
 
     def test_should_not_change_from_uncommitted_edits(self, repo: Path):
-        shas_before = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_before = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
 
         (repo / "docker" / "app" / "main.py").write_text("print('uncommitted')")
 
-        shas_after = compute_service_shas(repo, repo / "compose.bake.yml")
+        shas_after = compute_service_shas(repo, parse_bake(repo / "compose.bake.yml"))
         assert shas_before == shas_after

@@ -3,23 +3,20 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 
-from typing import Any
-
 import pathspec
-import yaml
 from bashrun.bash import bash, bash_output
 
+from .documents import BakeDocument
 
-def compute_service_shas(repo_root: Path, bake_file: Path) -> dict[str, str]:
+
+def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
     repo_root = repo_root.resolve()
 
-    bake_data: dict[str, Any] = yaml.safe_load(bake_file.read_text(encoding="utf-8"))
     service_dirs: set[str] = set()
-    for config in bake_data["services"].values():
-        build: dict[str, Any] = config.get("build", {})
-        if not build.get("tags"):
+    for config in bake.services.values():
+        if not config.build.tags:
             continue
-        service_dirs.add(str(PurePosixPath(build.get("dockerfile", "")).parent))
+        service_dirs.add(str(PurePosixPath(config.build.dockerfile).parent))
 
     tree_entries = bash_output("git ls-tree -r HEAD", cwd=repo_root).splitlines()
 

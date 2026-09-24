@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+DECLARED_REFERENCE_PATTERN = re.compile(
+    r"^(?P<path>[^:@\s$]+)(?::(?P<tag>[^@\s$]+))?(?:@(?P<digest>sha256:[a-f0-9]{64}))?$"
+)
+DIGEST_TAIL_PATTERN = re.compile(r"@sha256:[a-f0-9]{64}$")
 
 
 class BakeBuild(BaseModel):
@@ -35,6 +41,19 @@ class BakeDocument(BaseModel):
     registry_cache: str | None = Field(default=None, alias="x-registry-cache")
     cross_compile_targets: list[str] = Field(default_factory=list, alias="x-cross-compile-targets")
     services: dict[str, BakeService] = Field(default_factory=dict)
+
+    @field_validator("base_images")
+    @classmethod
+    def _require_tag_or_digest(cls, base_images: dict[str, str]) -> dict[str, str]:
+        for name, reference in base_images.items():
+            match = DECLARED_REFERENCE_PATTERN.fullmatch(reference)
+            if match is None or not (match.group("tag") or match.group("digest")):
+                raise ValueError(f"x-base-images.{name}: {reference!r} must be 'path:tag' or 'path@digest'")
+        return base_images
+
+
+def digest_pinned(reference: str) -> bool:
+    return DIGEST_TAIL_PATTERN.search(reference) is not None
 
 
 def parse_bake(path: Path) -> BakeDocument:

@@ -8,6 +8,7 @@ from .detect_gpu import Gpu, detect_gpu
 
 from .build_docker import run_build
 from .context_sha import compute_service_shas
+from .documents import parse_bake
 from .lifecycle import BAKE_FILE, enforce_bake_declaration, expand_compose_files, load_lifecycle_config
 from .modes import resolve_auth_mode
 
@@ -60,7 +61,7 @@ def up(
         run_build(gpu=gpu)
 
     if BAKE_FILE.exists():
-        os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
+        os.environ.update(compute_service_shas(Path.cwd(), parse_bake(BAKE_FILE)))
 
     compose_files = expand_compose_files(config, gpu, include_dev=dev)
     if not compose_files:

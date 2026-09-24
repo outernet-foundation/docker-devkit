@@ -9,13 +9,13 @@ from subprocess import CalledProcessError
 from typing import Annotated, Any, Literal
 
 import typer
-import yaml
 from bashrun.bash import bash, bash_output
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
+from .documents import BakeDocument, digest_pinned, parse_bake
 from pydantic_settings import BaseSettings
 
 from .context_sha import compute_service_shas
-from .image_refs import bake_base_image_refs, compose_image_refs, resolve_remote_digest
+from .image_refs import bake_base_image_refs, resolve_remote_digest
 from .modes import parse_env_file
 
 
@@ -27,7 +27,6 @@ settings = Settings.model_validate({})
 
 LOCK_FILE = Path(".env.lock")
 ENV_SHAS_FILE = Path(".env.shas")
-COMPOSE_FILE = Path("compose.yml")
 DEFAULT_BAKE_FILE = Path("compose.bake.yml")
 METADATA_PATH = Path("metadata.json")
 
@@ -75,7 +74,9 @@ def run_build(
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
 ) -> None:
-    service_shas = compute_service_shas(Path.cwd(), DEFAULT_BAKE_FILE)
+    bake = parse_bake(DEFAULT_BAKE_FILE)
+
+    service_shas = compute_service_shas(Path.cwd(), bake)
     os.environ.update(service_shas)
 
     # Write .env.shas with the locally-built image tags
@@ -83,13 +84,15 @@ def run_build(
         "".join(f"{key}={value}\n" for key, value in sorted(service_shas.items())), encoding="utf-8"
     )
 
-    # Load the bake file and any existing lock
-    bake_data: dict[str, Any] = yaml.safe_load(DEFAULT_BAKE_FILE.read_text(encoding="utf-8"))
+    # Load any existing lock
     lock_data = parse_env_file(LOCK_FILE) if LOCK_FILE.exists() else {}
 
     # TOOD: Create separate commands for ci and local modes so typer can do this validation instead of us
     if mode == "ci" and gpu == "auto":
         raise typer.BadParameter("In CI mode, --gpu cannot be 'auto'; specify 'cuda' or 'rocm'.")
+
+    if mode == "ci" and bake.registry_cache is None:
+        raise typer.BadParameter("In CI mode, the bake file must declare x-registry-cache.")
 
     if gpu_only and gpu not in GPU_TYPES:
         raise typer.BadParameter("--gpu-only requires a concrete gpu (cuda or rocm), not 'auto' or 'none'.")
@@ -102,28 +105,18 @@ def run_build(
     if gpu == "auto" and not lock_only:
         gpu = detect_gpu()
 
-    # Resolve base image external dependencies
-    for occurrence in [ref for ref in bake_base_image_refs(bake_data) if upgrade or ref.name not in lock_data]:
-        lock_data[occurrence.name] = (
-            f"@{'' if '$' in occurrence.reference else resolve_remote_digest(occurrence.reference)}"
-        )
-
-    # Resolve third-party image external dependencies. x-image-ref marks services whose image
-    # is sourced externally (vs. built from a bake file), so it's the right discriminator
-    # regardless of how many bake files exist.
-    third_party_images: dict[str, str] = {
-        occurrence.name.upper().replace("-", "_") + "_IMAGE": occurrence.reference
-        for occurrence in (compose_image_refs(COMPOSE_FILE) if COMPOSE_FILE.exists() else [])
-    }
-
-    # Re-resolve when explicitly requested, when unseen, or when the image name in compose.yml
-    # changed from what's in the lock file (e.g. postgres:16-alpine → postgis/postgres:16-3.4-alpine)
-    for image, ref in {
-        image: ref
-        for image, ref in third_party_images.items()
-        if upgrade or image not in lock_data or not lock_data[image].startswith(ref + "@")
-    }.items():
-        lock_data[image] = f"{ref}@{'' if '$' in ref else resolve_remote_digest(ref)}"
+    # One lock entry per declared third-party image: NAME=path:tag@sha256:…
+    for occurrence in bake_base_image_refs(bake):
+        if digest_pinned(occurrence.reference):
+            lock_data[occurrence.name] = occurrence.reference
+            continue
+        if (
+            not upgrade
+            and occurrence.name in lock_data
+            and lock_data[occurrence.name].startswith(occurrence.reference + "@")
+        ):
+            continue
+        lock_data[occurrence.name] = f"{occurrence.reference}@{resolve_remote_digest(occurrence.reference)}"
 
     # Update main lock file
     LOCK_FILE.write_text(
@@ -142,17 +135,17 @@ def run_build(
 
     # Determine bake targets
     if targets_opt:
-        unknown = set(targets_opt) - set(bake_data["services"])
+        unknown = set(targets_opt) - set(bake.services)
         if unknown:
-            raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(bake_data['services'])}")
-        targets = [t for t in bake_data["services"] if t in set(targets_opt)]
+            raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(bake.services)}")
+        targets = [t for t in bake.services if t in set(targets_opt)]
     else:
-        targets = compute_default_targets(bake_data, gpu, gpu_only)
+        targets = compute_default_targets(bake, gpu, gpu_only)
 
     # Configure registry caches in CI mode
     if mode == "ci":
         for target in targets:
-            target_cache = f"{bake_data['x-registry-cache']}:{target}"
+            target_cache = f"{bake.registry_cache}:{target}"
             command_arguments.append(
                 f"--set {target}.cache-to+=type=registry,ref={target_cache},mode=max,image-manifest=true,oci-mediatypes=true"
             )
@@ -171,8 +164,7 @@ def run_build(
         else:
             raise RuntimeError(f"Unsupported host architecture: {machine}")
         for target in targets:
-            target_platforms = bake_data["services"][target].get("build", {}).get("platforms", [])
-            if len(target_platforms) > 1:
+            if len(bake.services[target].build.platforms) > 1:
                 command_arguments.append(f"--set {target}.platform={host_platform}")
 
     # Load or push images based on mode
@@ -246,11 +238,9 @@ def _check_gc_limits(min_gb: int = 60):
 # Services without build.tags (e.g. neural-networks-base-*) stay out too: they are
 # build-only dependencies pulled in via additional_contexts, and bake rejects a
 # tagless target under --push.
-def compute_default_targets(bake_data: dict[str, Any], gpu: Gpu, gpu_only: bool = False) -> list[str]:
-    cross_compile_targets: set[str] = set(bake_data.get("x-cross-compile-targets", []))
-    tagged_services = [
-        service for service, config in bake_data["services"].items() if config.get("build", {}).get("tags")
-    ]
+def compute_default_targets(bake: BakeDocument, gpu: Gpu, gpu_only: bool = False) -> list[str]:
+    cross_compile_targets: set[str] = set(bake.cross_compile_targets)
+    tagged_services = [service for service, config in bake.services.items() if config.build.tags]
     if gpu_only:
         return [
             service

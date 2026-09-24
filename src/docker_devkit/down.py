@@ -7,6 +7,7 @@ from bashrun.bash import bash_handoff
 from .detect_gpu import Gpu, detect_gpu
 
 from .context_sha import compute_service_shas
+from .documents import parse_bake
 from .lifecycle import BAKE_FILE, enforce_bake_declaration, expand_compose_files, load_lifecycle_config
 from .modes import resolve_auth_mode
 
@@ -36,7 +37,7 @@ def down(
     resolve_auth_mode(ENV_FILE)
 
     if BAKE_FILE.exists():
-        os.environ.update(compute_service_shas(Path.cwd(), BAKE_FILE))
+        os.environ.update(compute_service_shas(Path.cwd(), parse_bake(BAKE_FILE)))
 
     # Always layer the dev overlay so containers from a prior --dev bring-up get torn down too
     compose_files = expand_compose_files(config, gpu, include_dev=True)

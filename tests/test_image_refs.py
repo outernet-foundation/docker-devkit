@@ -1,17 +1,18 @@
 from pathlib import Path
 
 import pytest
-import yaml
+from pydantic import ValidationError
 
 from docker_devkit import image_refs
+from docker_devkit.documents import BakeDocument
 from docker_devkit.image_refs import (
     ImageReference,
     VersionCoupling,
     VersionSite,
     bake_base_image_refs,
-    collect_repo_references,
-    compose_image_refs,
+    declared_references,
     resolve_remote_digest,
+    stray_references,
     strip_build_args,
     unpinned_references,
     version_coupling_violations,
@@ -23,14 +24,14 @@ VERSION_COUPLINGS = [
     VersionCoupling(
         name="uv",
         pyproject_key="tool.uv.required-version",
-        sites=(VersionSite("uv base tag", "compose*.bake.yml", r"uv:([^@]+?)-", "UV_BASE_DIGEST"),),
+        sites=(VersionSite("uv base tag", "compose*.bake.yml", r"uv:([^@]+?)-", "UV_BASE_IMAGE"),),
     ),
     VersionCoupling(
         name="python",
         pyproject_key="project.requires-python",
         sites=(
-            VersionSite("uv base python component", "compose*.bake.yml", r"python([0-9][0-9.]*)", "UV_BASE_DIGEST"),
-            VersionSite("python base tag", "compose.zed.bake.yml", r"python:([0-9][0-9.]*)", "PYTHON_BASE_DIGEST"),
+            VersionSite("uv base python component", "compose*.bake.yml", r"python([0-9][0-9.]*)", "UV_BASE_IMAGE"),
+            VersionSite("python base tag", "compose.zed.bake.yml", r"python:([0-9][0-9.]*)", "PYTHON_BASE_IMAGE"),
             VersionSite("uv python install", "docker/zed-capture/Dockerfile", r"uv python install ([0-9][0-9.]*)"),
         ),
     ),
@@ -47,76 +48,41 @@ def _inspect_output_without_digest(command: str) -> str:
     return "Name: x\n"
 
 
-class TestComposeImageRefs:
-    def test_should_yield_services_with_x_image_ref(self, tmp_path: Path):
-        compose_file = tmp_path / "compose.yml"
-        compose_file.write_text(
-            "services:\n"
-            "  minio:\n"
-            "    x-image-ref: docker.io/minio/minio:latest\n"
-            "    environment: {FOO: BAR}\n"
-            "  api:\n"
-            "    build: {dockerfile: docker/api/Dockerfile}\n",
-            encoding="utf-8",
-        )
-        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
-
-    def test_should_return_empty_when_no_services(self, tmp_path: Path):
-        compose_file = tmp_path / "compose.yml"
-        compose_file.write_text("volumes: {}\n", encoding="utf-8")
-        assert compose_image_refs(compose_file) == []
-
-    def test_should_tolerate_compose_extension_tags(self, tmp_path: Path):
-        compose_file = tmp_path / "compose.yml"
-        compose_file.write_text(
-            "services:\n"
-            "  minio:\n"
-            "    x-image-ref: docker.io/minio/minio:latest\n"
-            "    ports: !reset []\n"
-            "    labels: !override {a: b}\n",
-            encoding="utf-8",
-        )
-        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
-
-    def test_should_reject_unknown_extension_tags(self, tmp_path: Path):
-        compose_file = tmp_path / "compose.yml"
-        compose_file.write_text("services:\n  minio:\n    ports: !nonsense []\n", encoding="utf-8")
-        with pytest.raises(yaml.constructor.ConstructorError):
-            compose_image_refs(compose_file)
-
-    def test_should_not_follow_includes(self, tmp_path: Path):
-        included = tmp_path / "compose.services.yml"
-        included.write_text(
-            "services:\n  cloudbeaver:\n    x-image-ref: dbeaver/cloudbeaver:25.1.4\n", encoding="utf-8"
-        )
-        compose_file = tmp_path / "compose.yml"
-        compose_file.write_text(
-            "include:\n"
-            "  - oci://ghcr.io/some/placeframe-stack@sha256:abc\n"
-            "  - compose.services.yml\n"
-            "services:\n"
-            "  minio:\n    x-image-ref: docker.io/minio/minio:latest\n",
-            encoding="utf-8",
-        )
-        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
-
-
 class TestBakeBaseImageRefs:
     def test_should_yield_base_images(self):
-        assert bake_base_image_refs({"x-base-images": {"ALPINE_DIGEST": "alpine:3.20"}, "services": {}}) == [
-            ImageReference("ALPINE_DIGEST", "alpine:3.20")
-        ]
+        bake = BakeDocument.model_validate({"x-base-images": {"ALPINE_IMAGE": "alpine:3.20"}, "services": {}})
+        assert bake_base_image_refs(bake) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
 
     def test_should_return_empty_when_no_base_images(self):
-        assert bake_base_image_refs({"services": {}}) == []
+        bake = BakeDocument.model_validate({"services": {}})
+        assert bake_base_image_refs(bake) == []
 
 
-class TestCollectRepoReferences:
-    def test_should_collect_all_source_kinds(self, tmp_path: Path):
+class TestDeclaredReferences:
+    def test_should_yield_bake_declarations(self, tmp_path: Path):
+        (tmp_path / "compose.bake.yml").write_text("x-base-images:\n  ALPINE_IMAGE: alpine:3.20\n", encoding="utf-8")
+        assert declared_references(tmp_path) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
+
+    def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
+        assert declared_references(tmp_path) == []
+
+    def test_should_scan_only_bake_files(self, tmp_path: Path):
         (tmp_path / "compose.yml").write_text(
             "services:\n  minio:\n    x-image-ref: docker.io/minio/minio:latest\n", encoding="utf-8"
         )
-        (tmp_path / "compose.bake.yml").write_text("x-base-images:\n  ALPINE_DIGEST: alpine:3.20\n", encoding="utf-8")
+        docker_directory = tmp_path / "docker" / "api"
+        docker_directory.mkdir(parents=True)
+        (docker_directory / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
+        assert declared_references(tmp_path) == []
+
+    def test_should_reject_unpinned_declaration(self, tmp_path: Path):
+        (tmp_path / "compose.bake.yml").write_text("x-base-images:\n  ALPINE_IMAGE: alpine\n", encoding="utf-8")
+        with pytest.raises(ValidationError):
+            declared_references(tmp_path)
+
+
+class TestStrayReferences:
+    def test_should_collect_dockerfile_and_score_sources(self, tmp_path: Path):
         docker_directory = tmp_path / "docker" / "api"
         docker_directory.mkdir(parents=True)
         (docker_directory / "Dockerfile").write_text(
@@ -132,39 +98,14 @@ class TestCollectRepoReferences:
             "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak:26.3.5@sha256:abc\n",
             encoding="utf-8",
         )
-        assert collect_repo_references(tmp_path) == [
-            ImageReference("minio", "docker.io/minio/minio:latest"),
-            ImageReference("ALPINE_DIGEST", "alpine:3.20"),
+        assert stray_references(tmp_path) == [
             ImageReference("", "python:3.13-slim"),
             ImageReference("", "ghcr.io/astral-sh/uv:latest"),
             ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
         ]
 
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
-        assert collect_repo_references(tmp_path) == []
-
-    def test_should_tolerate_compose_extension_tags(self, tmp_path: Path):
-        (tmp_path / "compose.yml").write_text(
-            "services:\n"
-            "  minio:\n"
-            "    x-image-ref: docker.io/minio/minio:latest\n"
-            "    ports: !reset []\n"
-            "    labels: !override {a: b}\n",
-            encoding="utf-8",
-        )
-        assert collect_repo_references(tmp_path) == [ImageReference("minio", "docker.io/minio/minio:latest")]
-
-    def test_should_skip_dockerfiles_when_glob_is_none(self, tmp_path: Path):
-        docker_directory = tmp_path / "docker" / "api"
-        docker_directory.mkdir(parents=True)
-        (docker_directory / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
-        assert collect_repo_references(tmp_path, dockerfile_glob=None) == []
-
-    def test_should_skip_score_files_when_glob_is_none(self, tmp_path: Path):
-        score_directory = tmp_path / "score"
-        score_directory.mkdir()
-        (score_directory / "app.yaml").write_text("    image: x/y:1\n", encoding="utf-8")
-        assert collect_repo_references(tmp_path, image_glob=None) == []
+        assert stray_references(tmp_path) == []
 
 
 class TestStripBuildArgs:
@@ -196,12 +137,6 @@ class TestUnpinnedReferences:
         )
         assert unpinned_references(tmp_path) == ["ghcr.io/outernet-foundation/mirror/docker.io/library/caddy"]
 
-    def test_should_flag_untagged_compose_refs(self, tmp_path: Path):
-        (tmp_path / "compose.yml").write_text(
-            "services:\n  minio:\n    x-image-ref: docker.io/minio/minio\n", encoding="utf-8"
-        )
-        assert unpinned_references(tmp_path) == ["docker.io/minio/minio"]
-
     def test_should_ignore_stage_names_and_arg_only_refs(self, tmp_path: Path):
         docker_directory = tmp_path / "docker" / "api"
         docker_directory.mkdir(parents=True)
@@ -223,13 +158,13 @@ class TestVersionCouplingViolations:
             '[project]\nrequires-python = ">=3.13"\n\n[tool.uv]\nrequired-version = "==0.12.15"\n', encoding="utf-8"
         )
         (tmp_path / "compose.bake.yml").write_text(
-            f"x-base-images:\n  UV_BASE_DIGEST: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:{uv_tag}\n",
+            f"x-base-images:\n  UV_BASE_IMAGE: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:{uv_tag}\n",
             encoding="utf-8",
         )
         (tmp_path / "compose.zed.bake.yml").write_text(
             "x-base-images:\n"
-            f"  UV_BASE_DIGEST: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:{uv_tag}\n"
-            f"  PYTHON_BASE_DIGEST: ghcr.io/outernet-foundation/mirror/docker.io/library/python:{python_tag}\n",
+            f"  UV_BASE_IMAGE: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:{uv_tag}\n"
+            f"  PYTHON_BASE_IMAGE: ghcr.io/outernet-foundation/mirror/docker.io/library/python:{python_tag}\n",
             encoding="utf-8",
         )
         docker_directory = tmp_path / "docker" / "zed-capture"
@@ -272,7 +207,7 @@ class TestVersionCouplingViolations:
         self._write_version_tree(tmp_path)
         (tmp_path / "compose.zed.bake.yml").write_text(
             "x-base-images:\n"
-            "  UV_BASE_DIGEST: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:0.12.15-python3.13-trixie-slim\n",
+            "  UV_BASE_IMAGE: ghcr.io/outernet-foundation/mirror/ghcr.io/astral-sh/uv:0.12.15-python3.13-trixie-slim\n",
             encoding="utf-8",
         )
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [

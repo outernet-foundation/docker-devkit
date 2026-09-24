@@ -8,11 +8,10 @@ from dataclasses import dataclass
 from itertools import starmap
 from pathlib import Path
 
-import yaml
 from bashrun.bash import bash_output
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import RootModel
 
-from .documents import BakeDocument
+from .documents import BakeDocument, parse_bake
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
@@ -60,31 +59,10 @@ class VersionCoupling:
     sites: tuple[VersionSite, ...]
 
 
-# Compose files may carry tags like `ports: !reset []` that plain YAML parsing
-# rejects as unknown. Tagged values are never consumed here, so they parse as None.
-class ComposeDialectLoader(yaml.SafeLoader):
-    pass
-
-
-ComposeDialectLoader.add_constructor("!reset", lambda loader, node: None)
-ComposeDialectLoader.add_constructor("!override", lambda loader, node: None)
-
-
-def compose_image_refs(compose_file: Path) -> list[ImageReference]:
-    # Includes are not followed — no repo declares x-image-ref inside an included file.
-    document = yaml.load(compose_file.read_text(encoding="utf-8"), Loader=ComposeDialectLoader)
-    services = document.get("services", {}) if isinstance(document, dict) else {}
-    return [
-        ImageReference(name, service["x-image-ref"])
-        for name, service in services.items()
-        if isinstance(service, dict) and isinstance(service.get("x-image-ref"), str)
-    ]
-
-
 def unpinned_references(root: Path) -> list[str]:
     return [
         occurrence.reference
-        for occurrence in collect_repo_references(root)
+        for occurrence in stray_references(root)
         if "/" in (reference := strip_build_args(occurrence.reference))
         and not BUILD_ARG_PATTERN.search(occurrence.reference)
         and ":" not in (tail := reference[reference.rfind("/") + 1 :])
@@ -92,44 +70,32 @@ def unpinned_references(root: Path) -> list[str]:
     ]
 
 
-def collect_repo_references(
+def declared_references(root: Path, bake_glob: str = "compose*.bake.yml") -> list[ImageReference]:
+    return [reference for path in sorted(root.glob(bake_glob)) for reference in bake_base_image_refs(parse_bake(path))]
+
+
+def stray_references(
     root: Path,
-    compose_glob: str = "compose*.yml",
-    bake_glob: str = "compose*.bake.yml",
-    dockerfile_glob: str | None = "docker/*/Dockerfile*",
-    image_glob: str | None = "score/*.yaml",
+    dockerfile_glob: str = "docker/*/Dockerfile*",
+    image_glob: str = "score/*.yaml",
 ) -> list[ImageReference]:
     return (
-        [reference for path in sorted(root.glob(compose_glob)) for reference in compose_image_refs(path)]
-        + [
-            reference
-            for path in sorted(root.glob(bake_glob))
-            for reference in bake_base_image_refs(yaml.safe_load(path.read_text(encoding="utf-8")))
+        [
+            ImageReference("", match.group(1))
+            for path in sorted(root.glob(dockerfile_glob))
+            for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
-        + (
-            [
-                ImageReference("", match.group(1))
-                for path in sorted(root.glob(dockerfile_glob))
-                for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
-            ]
-            + [
-                ImageReference("", match.group(1))
-                for path in sorted(root.glob(dockerfile_glob))
-                for match in COPY_FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
-                if "/" in match.group(1)
-            ]
-            if dockerfile_glob
-            else []
-        )
-        + (
-            [
-                ImageReference("", match.group(1))
-                for path in sorted(root.glob(image_glob))
-                for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
-            ]
-            if image_glob
-            else []
-        )
+        + [
+            ImageReference("", match.group(1))
+            for path in sorted(root.glob(dockerfile_glob))
+            for match in COPY_FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
+            if "/" in match.group(1)
+        ]
+        + [
+            ImageReference("", match.group(1))
+            for path in sorted(root.glob(image_glob))
+            for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
+        ]
     )
 
 
@@ -176,7 +142,7 @@ def _site_version(path: Path, site: VersionSite) -> str:
         haystack = next(
             (
                 reference.reference
-                for reference in bake_base_image_refs(yaml.safe_load(path.read_text(encoding="utf-8")))
+                for reference in bake_base_image_refs(parse_bake(path))
                 if reference.name == site.base_image
             ),
             "",
@@ -187,5 +153,5 @@ def _site_version(path: Path, site: VersionSite) -> str:
     return match.group(1) if match else MISSING_VERSION
 
 
-def bake_base_image_refs(document: object) -> list[ImageReference]:
-    return list(starmap(ImageReference, BakeDocument.model_validate(document).base_images.items()))
+def bake_base_image_refs(document: BakeDocument) -> list[ImageReference]:
+    return list(starmap(ImageReference, document.base_images.items()))

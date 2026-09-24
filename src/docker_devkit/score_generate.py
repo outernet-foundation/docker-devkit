@@ -15,6 +15,7 @@ from bashrun.bash import bash
 from pydantic import BaseModel, ConfigDict, Field
 
 from .context_sha import compute_service_shas
+from .documents import parse_bake
 from .image_refs import TomlDocument, TomlValue
 
 # Placeholders in the workload files are ALL-CAPS, so this cannot collide with Score's own
@@ -95,7 +96,7 @@ def load_score_config(root: Path) -> ScoreConfig:
 def generate(config: ScoreConfig, target: Target = "both", local: bool = False) -> None:
     # The same call up, build, and preflight make, so every image tag is a pure function of
     # committed source rather than a hand-typed value.
-    os.environ.update(compute_service_shas(Path.cwd(), config.bake_file))
+    os.environ.update(compute_service_shas(Path.cwd(), parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
 
     if target in ("both", "compose"):
