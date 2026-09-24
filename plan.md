@@ -1,18 +1,22 @@
 # One home for third-party image declarations; docker-devkit stops parsing compose
 
-Status note for pickup: docker-devkit (0.1.15) and release-devkit (0.1.11) are
-shipped. placeframe is complete on `dev` (operator push pending): `f2c94d16`
-declarations conversion + generate-score port completion, `33ddfb26` score
-artifacts, `e0bcd9f8` prose. Resolved during execution: the fluent-bit
-declaration key is `SEAWEEDFS_AUDIT_IMAGE` (the plan's `FLUENT_BIT_IMAGE` never
-matched the actual compose hole — holes stayed textually unchanged); stale
-`DOTNET_*` declarations and `PYTHON_BASE`/`ZED_BASE` lock entries were pruned
+Status note for pickup: COMPLETE. Shipped: docker-devkit 0.1.15, release-devkit
+0.1.11 (both on PyPI). placeframe `dev`: `f2c94d16` (declarations conversion +
+generate-score port completion), `33ddfb26` (score artifacts), `e0bcd9f8`
+(prose) — preflight green. capture-tool `dev`: `ef7660d` (renames + repin),
+`6025c5e` (prose) — lock round-trip stable, rig render green. All four repos
+need operator pushes. Resolved during execution: the fluent-bit declaration key
+is `SEAWEEDFS_AUDIT_IMAGE` (the plan's `FLUENT_BIT_IMAGE` never matched the
+actual compose hole — holes stayed textually unchanged); stale `DOTNET_*`
+declarations and `PYTHON_BASE`/`ZED_BASE` lock entries were pruned in placeframe
 (zero consumers); `INITIALIZE_S3_IMAGE` (consumed by scripts/sweep_postprocess)
 was promoted to a declaration; the generate-score console-script collision was
-resolved by completing the port (config table in placeframe pyproject, duplicate
-module deleted). Remaining: capture-tool (3 Dockerfiles + bake key renames,
-lock regen, repin) — its bake file is `compose.bake.yml`, not the
-`compose.zed.bake.yml` this plan named.
+resolved by completing the port (config table in placeframe pyproject,
+duplicate module deleted); capture-tool's bake file is `compose.bake.yml`, not
+the `compose.zed.bake.yml` this plan named. NEXT: make-it-sing's own plan.md
+resumes — flip its committed Stage 3 checkpoint (`6b4120c`) from
+`ARG UV_BASE_DIGEST` + `FROM mirror/…${UV_BASE_DIGEST}` to
+`ARG UV_BASE_IMAGE` + `FROM ${UV_BASE_IMAGE}`, repin docker-devkit >=0.1.15.
 
 ## Why this initiative exists
 
