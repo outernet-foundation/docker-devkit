@@ -1,18 +1,18 @@
 # One home for third-party image declarations; docker-devkit stops parsing compose
 
-Status note for pickup: the docker-devkit half is DONE — redesign executed in
-`2a1fe90` (compose parsing deleted, `declared_references`/`stray_references`
-split, `BakeDocument` base-images validator, typed bake plumbing through
-build/up/down/generate-score, ci-mode registry-cache guard). pytest 77 green,
-ruff + basedpyright clean — the checkpoint's intentional failures are gone.
-Still pending, in order: operator push + tag-ledger release of this repo;
-release-devkit 0.1.11 (`mirror_images.py` → `declared_references`); the
-placeframe PR; capture-tool renames. No consumer repo has been touched yet.
-
-Note on release numbering: the plan projects 0.1.15, but the local tag ledger
-sits at docker-devkit-v0.1.11 with the lifecycle rewrite also unreleased —
-patch-auto will compute the real number at publish time, and the placeframe
-repin must use whatever ships, not the projection.
+Status note for pickup: docker-devkit (0.1.15) and release-devkit (0.1.11) are
+shipped. placeframe is complete on `dev` (operator push pending): `f2c94d16`
+declarations conversion + generate-score port completion, `33ddfb26` score
+artifacts, `e0bcd9f8` prose. Resolved during execution: the fluent-bit
+declaration key is `SEAWEEDFS_AUDIT_IMAGE` (the plan's `FLUENT_BIT_IMAGE` never
+matched the actual compose hole — holes stayed textually unchanged); stale
+`DOTNET_*` declarations and `PYTHON_BASE`/`ZED_BASE` lock entries were pruned
+(zero consumers); `INITIALIZE_S3_IMAGE` (consumed by scripts/sweep_postprocess)
+was promoted to a declaration; the generate-score console-script collision was
+resolved by completing the port (config table in placeframe pyproject, duplicate
+module deleted). Remaining: capture-tool (3 Dockerfiles + bake key renames,
+lock regen, repin) — its bake file is `compose.bake.yml`, not the
+`compose.zed.bake.yml` this plan named.
 
 ## Why this initiative exists
 
