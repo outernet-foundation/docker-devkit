@@ -1,13 +1,18 @@
 # One home for third-party image declarations; docker-devkit stops parsing compose
 
-Status note for pickup: mid-initiative checkpoint. Committed on this branch (local
-only, operator push pending): `8e5cb6d` — `documents.py` (BakeDocument model +
-`parse_bake`), `compose_image_refs` as a single compressed helper (image_refs.py),
-`run_build` rewired to it, tests green (68). That checkpoint INTENTIONALLY fails
-ruff (S506 on `yaml.load`) and basedpyright (untyped PyYAML calls in
-`compose_image_refs`): both evaporate when the redesign below deletes compose
-parsing entirely. Do NOT fix them in place — execute the redesign. Nothing else
-has landed; no consumer repo has been touched yet.
+Status note for pickup: the docker-devkit half is DONE — redesign executed in
+`2a1fe90` (compose parsing deleted, `declared_references`/`stray_references`
+split, `BakeDocument` base-images validator, typed bake plumbing through
+build/up/down/generate-score, ci-mode registry-cache guard). pytest 77 green,
+ruff + basedpyright clean — the checkpoint's intentional failures are gone.
+Still pending, in order: operator push + tag-ledger release of this repo;
+release-devkit 0.1.11 (`mirror_images.py` → `declared_references`); the
+placeframe PR; capture-tool renames. No consumer repo has been touched yet.
+
+Note on release numbering: the plan projects 0.1.15, but the local tag ledger
+sits at docker-devkit-v0.1.11 with the lifecycle rewrite also unreleased —
+patch-auto will compute the real number at publish time, and the placeframe
+repin must use whatever ships, not the projection.
 
 ## Why this initiative exists
 
