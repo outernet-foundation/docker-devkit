@@ -12,30 +12,14 @@ import yaml
 from bashrun.bash import bash_output
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from .documents import BakeDocument
+
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
 COPY_FROM_PATTERN = re.compile(r"^COPY\s+--from=(\S+)", re.MULTILINE)
 IMAGE_LINE_PATTERN = re.compile(r"^\s*image:\s*[\"']?([^\s\"']+)", re.MULTILINE)
 DIGEST_PATTERN = re.compile(r"^Digest:\s+(sha256:[a-f0-9]+)", re.MULTILINE)
 MISSING_VERSION = "<missing>"
-
-
-class ComposeService(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    image_ref: str | None = Field(default=None, alias="x-image-ref")
-
-
-class ComposeDocument(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    services: dict[str, ComposeService] = Field(default_factory=dict)
-
-
-class BakeDocument(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    base_images: dict[str, str] = Field(default_factory=dict, alias="x-base-images")
 
 
 type TomlValue = (
@@ -76,6 +60,27 @@ class VersionCoupling:
     sites: tuple[VersionSite, ...]
 
 
+# Compose files may carry tags like `ports: !reset []` that plain YAML parsing
+# rejects as unknown. Tagged values are never consumed here, so they parse as None.
+class ComposeDialectLoader(yaml.SafeLoader):
+    pass
+
+
+ComposeDialectLoader.add_constructor("!reset", lambda loader, node: None)
+ComposeDialectLoader.add_constructor("!override", lambda loader, node: None)
+
+
+def compose_image_refs(compose_file: Path) -> list[ImageReference]:
+    # Includes are not followed — no repo declares x-image-ref inside an included file.
+    document = yaml.load(compose_file.read_text(encoding="utf-8"), Loader=ComposeDialectLoader)
+    services = document.get("services", {}) if isinstance(document, dict) else {}
+    return [
+        ImageReference(name, service["x-image-ref"])
+        for name, service in services.items()
+        if isinstance(service, dict) and isinstance(service.get("x-image-ref"), str)
+    ]
+
+
 def unpinned_references(root: Path) -> list[str]:
     return [
         occurrence.reference
@@ -95,15 +100,11 @@ def collect_repo_references(
     image_glob: str | None = "score/*.yaml",
 ) -> list[ImageReference]:
     return (
-        [
-            reference
-            for path in sorted(root.glob(compose_glob))
-            for reference in compose_service_refs(_load_yaml_document(path))
-        ]
+        [reference for path in sorted(root.glob(compose_glob)) for reference in compose_image_refs(path)]
         + [
             reference
             for path in sorted(root.glob(bake_glob))
-            for reference in bake_base_image_refs(_load_yaml_document(path))
+            for reference in bake_base_image_refs(yaml.safe_load(path.read_text(encoding="utf-8")))
         ]
         + (
             [
@@ -153,14 +154,6 @@ def resolve_remote_digest(reference: str) -> str:
     return match.group(1)
 
 
-def compose_service_refs(document: object) -> list[ImageReference]:
-    return [
-        ImageReference(service_name, service.image_ref)
-        for service_name, service in ComposeDocument.model_validate(document).services.items()
-        if service.image_ref is not None
-    ]
-
-
 def strip_build_args(reference: str) -> str:
     return BUILD_ARG_PATTERN.sub("", reference).strip()
 
@@ -183,7 +176,7 @@ def _site_version(path: Path, site: VersionSite) -> str:
         haystack = next(
             (
                 reference.reference
-                for reference in bake_base_image_refs(_load_yaml_document(path))
+                for reference in bake_base_image_refs(yaml.safe_load(path.read_text(encoding="utf-8")))
                 if reference.name == site.base_image
             ),
             "",
@@ -196,7 +189,3 @@ def _site_version(path: Path, site: VersionSite) -> str:
 
 def bake_base_image_refs(document: object) -> list[ImageReference]:
     return list(starmap(ImageReference, BakeDocument.model_validate(document).base_images.items()))
-
-
-def _load_yaml_document(path: Path) -> object:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))

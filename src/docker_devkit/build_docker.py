@@ -15,7 +15,7 @@ from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from pydantic_settings import BaseSettings
 
 from .context_sha import compute_service_shas
-from .image_refs import bake_base_image_refs, compose_service_refs, resolve_remote_digest
+from .image_refs import bake_base_image_refs, compose_image_refs, resolve_remote_digest
 from .modes import parse_env_file
 
 
@@ -78,20 +78,13 @@ def run_build(
     service_shas = compute_service_shas(Path.cwd(), DEFAULT_BAKE_FILE)
     os.environ.update(service_shas)
 
-    # Tags of the images built this run — the local analog of .env.lock's pulled digests
+    # Write .env.shas with the locally-built image tags
     ENV_SHAS_FILE.write_text(
         "".join(f"{key}={value}\n" for key, value in sorted(service_shas.items())), encoding="utf-8"
     )
 
-    # A bake-only repo has no compose.yml; every consumer of compose_data is empty-safe
+    # Load the bake file and any existing lock
     bake_data: dict[str, Any] = yaml.safe_load(DEFAULT_BAKE_FILE.read_text(encoding="utf-8"))
-    compose_data: dict[str, Any] = (
-        yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8")) if COMPOSE_FILE.exists() else {}
-    )
-    for include in compose_data.pop("include", []):
-        include_path = COMPOSE_FILE.parent / (include if isinstance(include, str) else include["path"])
-        included: dict[str, Any] = yaml.safe_load(include_path.read_text(encoding="utf-8"))
-        compose_data.setdefault("services", {}).update(included.get("services", {}))
     lock_data = parse_env_file(LOCK_FILE) if LOCK_FILE.exists() else {}
 
     # TOOD: Create separate commands for ci and local modes so typer can do this validation instead of us
@@ -120,7 +113,7 @@ def run_build(
     # regardless of how many bake files exist.
     third_party_images: dict[str, str] = {
         occurrence.name.upper().replace("-", "_") + "_IMAGE": occurrence.reference
-        for occurrence in compose_service_refs(compose_data)
+        for occurrence in (compose_image_refs(COMPOSE_FILE) if COMPOSE_FILE.exists() else [])
     }
 
     # Re-resolve when explicitly requested, when unseen, or when the image name in compose.yml

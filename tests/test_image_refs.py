@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+import yaml
 
 from docker_devkit import image_refs
 from docker_devkit.image_refs import (
@@ -10,7 +10,7 @@ from docker_devkit.image_refs import (
     VersionSite,
     bake_base_image_refs,
     collect_repo_references,
-    compose_service_refs,
+    compose_image_refs,
     resolve_remote_digest,
     strip_build_args,
     unpinned_references,
@@ -47,23 +47,58 @@ def _inspect_output_without_digest(command: str) -> str:
     return "Name: x\n"
 
 
-class TestComposeServiceRefs:
-    def test_should_yield_services_with_x_image_ref(self):
-        document = {
-            "services": {
-                "minio": {"x-image-ref": "docker.io/minio/minio:latest", "environment": {"FOO": "BAR"}},
-                "api": {"build": {"dockerfile": "docker/api/Dockerfile"}},
-            }
-        }
-        assert compose_service_refs(document) == [ImageReference("minio", "docker.io/minio/minio:latest")]
+class TestComposeImageRefs:
+    def test_should_yield_services_with_x_image_ref(self, tmp_path: Path):
+        compose_file = tmp_path / "compose.yml"
+        compose_file.write_text(
+            "services:\n"
+            "  minio:\n"
+            "    x-image-ref: docker.io/minio/minio:latest\n"
+            "    environment: {FOO: BAR}\n"
+            "  api:\n"
+            "    build: {dockerfile: docker/api/Dockerfile}\n",
+            encoding="utf-8",
+        )
+        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
 
-    def test_should_return_empty_when_no_services(self):
-        assert compose_service_refs({"volumes": {}}) == []
-        assert compose_service_refs({}) == []
+    def test_should_return_empty_when_no_services(self, tmp_path: Path):
+        compose_file = tmp_path / "compose.yml"
+        compose_file.write_text("volumes: {}\n", encoding="utf-8")
+        assert compose_image_refs(compose_file) == []
 
-    def test_should_reject_malformed_service(self):
-        with pytest.raises(ValidationError):
-            compose_service_refs({"services": {"broken": "not-a-mapping"}})
+    def test_should_tolerate_compose_extension_tags(self, tmp_path: Path):
+        compose_file = tmp_path / "compose.yml"
+        compose_file.write_text(
+            "services:\n"
+            "  minio:\n"
+            "    x-image-ref: docker.io/minio/minio:latest\n"
+            "    ports: !reset []\n"
+            "    labels: !override {a: b}\n",
+            encoding="utf-8",
+        )
+        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
+
+    def test_should_reject_unknown_extension_tags(self, tmp_path: Path):
+        compose_file = tmp_path / "compose.yml"
+        compose_file.write_text("services:\n  minio:\n    ports: !nonsense []\n", encoding="utf-8")
+        with pytest.raises(yaml.constructor.ConstructorError):
+            compose_image_refs(compose_file)
+
+    def test_should_not_follow_includes(self, tmp_path: Path):
+        included = tmp_path / "compose.services.yml"
+        included.write_text(
+            "services:\n  cloudbeaver:\n    x-image-ref: dbeaver/cloudbeaver:25.1.4\n", encoding="utf-8"
+        )
+        compose_file = tmp_path / "compose.yml"
+        compose_file.write_text(
+            "include:\n"
+            "  - oci://ghcr.io/some/placeframe-stack@sha256:abc\n"
+            "  - compose.services.yml\n"
+            "services:\n"
+            "  minio:\n    x-image-ref: docker.io/minio/minio:latest\n",
+            encoding="utf-8",
+        )
+        assert compose_image_refs(compose_file) == [ImageReference("minio", "docker.io/minio/minio:latest")]
 
 
 class TestBakeBaseImageRefs:
@@ -107,6 +142,17 @@ class TestCollectRepoReferences:
 
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
         assert collect_repo_references(tmp_path) == []
+
+    def test_should_tolerate_compose_extension_tags(self, tmp_path: Path):
+        (tmp_path / "compose.yml").write_text(
+            "services:\n"
+            "  minio:\n"
+            "    x-image-ref: docker.io/minio/minio:latest\n"
+            "    ports: !reset []\n"
+            "    labels: !override {a: b}\n",
+            encoding="utf-8",
+        )
+        assert collect_repo_references(tmp_path) == [ImageReference("minio", "docker.io/minio/minio:latest")]
 
     def test_should_skip_dockerfiles_when_glob_is_none(self, tmp_path: Path):
         docker_directory = tmp_path / "docker" / "api"
