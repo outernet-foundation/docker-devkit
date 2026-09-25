@@ -16,7 +16,8 @@ from .lifecycle import (
     resolve_lock,
     resolve_manifest,
 )
-from .modes import resolve_auth_mode
+from .mirror import load_mirror_config, upstream_fallback, write_fallback_overlay
+from .modes import parse_env_file, resolve_auth_mode
 
 ENV_FILE = Path(".env")
 
@@ -41,6 +42,13 @@ def up(
         "--dev",
         help="Layer the declared dev overlay (compose.dev.yml shape) over the production stack for bind-mount/debug bring-up.",
     ),
+    allow_upstream_fallback: Annotated[
+        bool,
+        typer.Option(
+            "--allow-upstream-fallback",
+            help="Pull unmirrored lock entries from upstream at the same digest instead of failing closed.",
+        ),
+    ] = False,
 ) -> None:
     root = Path.cwd()
     config = load_lifecycle_config(root)
@@ -67,8 +75,21 @@ def up(
 
     auth_mode = resolve_auth_mode(ENV_FILE)
 
+    substitutions: dict[str, str] = {}
+    fallback_overlay: Path | None = None
+    mirror_config = load_mirror_config(root)
+    if mirror_config is not None:
+        substitutions = upstream_fallback(
+            parse_env_file(lock_file), mirror_config.prefix, allow_upstream_fallback=allow_upstream_fallback
+        )
+        if substitutions:
+            for name, upstream in sorted(substitutions.items()):
+                print(f"Falling back to upstream for {name}: {upstream}", flush=True)
+            os.environ.update(substitutions)
+            fallback_overlay = write_fallback_overlay(substitutions)
+
     if build:
-        run_build(gpu=gpu)
+        run_build(gpu=gpu, env_overlay=substitutions)
 
     if manifest is not None:
         os.environ.update(compute_service_shas(root, parse_bake(manifest)))
@@ -80,6 +101,8 @@ def up(
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
     profile_flag = "--profile keycloak " if auth_mode == "keycloak" else ""
     compose_args = f"{files_args} {profile_flag}--project-directory {root} --env-file .env --env-file {lock_file}"
+    if fallback_overlay is not None:
+        compose_args += f" --env-file {fallback_overlay}"
 
     up_command = f"docker compose {compose_args} up"
     if not build:

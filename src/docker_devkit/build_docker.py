@@ -17,6 +17,7 @@ from .context_sha import compute_service_shas
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
 from .lifecycle import require_manifest, resolve_lock
+from .mirror import is_mirrored, load_mirror_config, upstream_ref
 from .modes import parse_env_file
 
 
@@ -71,10 +72,12 @@ def run_build(
     gpu_only: bool = False,
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
+    env_overlay: dict[str, str] | None = None,
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
     lock_file = resolve_lock(root, manifest)
+    mirror_config = load_mirror_config(root)
 
     bake = parse_bake(manifest)
 
@@ -103,6 +106,9 @@ def run_build(
         gpu = detect_gpu()
 
     # One lock entry per declared third-party image: NAME=path:tag@sha256:…
+    # Mirror-prefixed declarations resolve their digest against upstream (crane copies
+    # are byte-identical, so the digest is valid under both names) and record it under
+    # the mirror name — declaring and re-locking works before CI has mirrored anything.
     for occurrence in bake_base_image_refs(bake):
         if digest_pinned(occurrence.reference):
             lock_data[occurrence.name] = occurrence.reference
@@ -113,7 +119,10 @@ def run_build(
             and lock_data[occurrence.name].startswith(occurrence.reference + "@")
         ):
             continue
-        lock_data[occurrence.name] = f"{occurrence.reference}@{resolve_remote_digest(occurrence.reference)}"
+        inspect_target = occurrence.reference
+        if mirror_config is not None and is_mirrored(occurrence.reference, mirror_config.prefix):
+            inspect_target = upstream_ref(occurrence.reference, mirror_config.prefix)
+        lock_data[occurrence.name] = f"{occurrence.reference}@{resolve_remote_digest(inspect_target)}"
 
     # Update main lock file
     lock_file.write_text(
@@ -126,6 +135,8 @@ def run_build(
 
     # Update environment with external dependency image digests
     os.environ.update(lock_data)
+    if env_overlay:
+        os.environ.update(env_overlay)
 
     # Build command arguments
     command_arguments: list[str] = []
