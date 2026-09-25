@@ -21,13 +21,17 @@ uv run up                      # docker compose up (auto-detects GPU; assembles 
 uv run up --dev                # layer the declared dev overlay (bind-mount/debug bring-up)
 uv run up --build              # build images locally first (requires workloads/images.yml)
 uv run up --gpu none           # override GPU auto-detection
+uv run up --allow-upstream-fallback  # per-run escape: pull unmirrored lock entries from upstream at the same digest
 uv run down                    # docker compose down
 uv run down -v                 # also remove named volumes
 uv run build                   # cross-build all images per workloads/images.yml
 uv run build --lock-only       # refresh the image lock without building
+uv run mirror                  # populate the org mirror namespace from mirror-prefixed declarations (CI)
 uv run generate-score          # regenerate Score compose/k8s manifests per [tool.docker-devkit.generate-score]
 uv run generate-score --local  # local-cluster variant (local storage class, gitignored output)
 ```
+
+Repos that consume third-party images through the org mirror namespace declare `[tool.docker-devkit.mirror]` (`prefix = "ghcr.io/outernet-foundation/mirror"`); `up` then fails closed on any lock entry not mirrored yet, and `build` resolves lock digests against upstream. See the "Mirror namespace and upstream fallback" section in [`AGENTS.md`](./AGENTS.md).
 
 ## Consuming from another repo
 
