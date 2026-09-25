@@ -28,4 +28,4 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Publish
-        run: uvx --from release-devkit==0.1.10 publish-stable --config publish-config.json
+        run: uvx --from release-devkit==0.1.13 publish-stable --config publish-config.json
