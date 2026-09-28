@@ -1,0 +1,8 @@
+requires: ">=0.1"
+ci_workflow: ci.yml
+packages:
+  docker-devkit:
+    path: .
+    major_minor: "0.1"
+    registries:
+      pypi: docker-devkit
