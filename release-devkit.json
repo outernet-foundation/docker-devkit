@@ -1,13 +1,10 @@
 {
-  "packages": [
-    {
-      "name": "docker-devkit",
+  "packages": {
+    "docker-devkit": {
       "path": ".",
       "major_minor": "0.1",
-      "registries": {
-        "pypi": "docker-devkit"
-      }
+      "registries": { "pypi": "docker-devkit" }
     }
-  ],
+  },
   "ci_workflow": "ci.yml"
 }
