@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from .config import LifecycleConfig, load_config
 from .detect_gpu import Gpu
 
 DEFAULT_COMPOSE_FILE = Path("compose.yml")
@@ -17,22 +15,9 @@ MANIFEST_LOCK_PAIR = {"images.yml": "images.lock", "compose.bake.yml": ".env.loc
 LOCK_CANDIDATES = (Path("workloads/images.lock"), Path(".env.lock"))
 
 
-class LifecycleConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    files: list[str] = Field(default_factory=list)
-    dev_file: str | None = None
-
-
 def load_lifecycle_config(root: Path) -> LifecycleConfig | None:
-    pyproject_path = root / "pyproject.toml"
-    if not pyproject_path.exists():
-        return None
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    section = data.get("tool", {}).get("docker-devkit", {}).get("lifecycle")
-    if section is None:
-        return None
-    return LifecycleConfig.model_validate(section)
+    config = load_config(root)
+    return config.lifecycle if config is not None else None
 
 
 def resolve_manifest(root: Path) -> Path | None:
@@ -56,7 +41,7 @@ def resolve_lock(root: Path, manifest: Path | None) -> Path:
 def enforce_bake_declaration(root: Path, config: LifecycleConfig | None) -> None:
     if config is None and any((root / candidate).exists() for candidate in MANIFEST_CANDIDATES):
         raise RuntimeError(
-            "image manifest present without [tool.docker-devkit.lifecycle]; declare the table or rename the file"
+            "image manifest present without a lifecycle section in docker-devkit.yaml; declare the section or rename the file"
         )
 
 

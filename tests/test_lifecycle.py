@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from docker_devkit.lifecycle import (
     LifecycleConfig,
@@ -12,18 +13,25 @@ from docker_devkit.lifecycle import (
 )
 
 
-def _write_pyproject(root: Path, lifecycle_toml: str) -> None:
-    content = f"[project]\nname = 'stack'\n\n{lifecycle_toml}"
-    (root / "pyproject.toml").write_text(content, encoding="utf-8")
+def _write_config(root: Path, sections: dict[str, object] | None = None) -> None:
+    payload: dict[str, object] = {"requires": ">=0.0"}
+    if sections is not None:
+        payload.update(sections)
+    (root / "docker-devkit.yaml").write_text(
+        yaml.safe_dump(payload, default_flow_style=False, sort_keys=False), encoding="utf-8"
+    )
 
 
 class TestLoadLifecycleConfig:
-    def test_loads_declared_table(self, tmp_path: Path):
-        _write_pyproject(
+    def test_loads_declared_files_and_dev_file(self, tmp_path: Path):
+        _write_config(
             tmp_path,
-            "[tool.docker-devkit.lifecycle]\n"
-            'files = ["compose.yml", "compose.postgres.yml", "compose.{gpu}.yml"]\n'
-            'dev_file = "compose.dev.yml"\n',
+            {
+                "lifecycle": {
+                    "files": ["compose.yml", "compose.postgres.yml", "compose.{gpu}.yml"],
+                    "dev_file": "compose.dev.yml",
+                }
+            },
         )
 
         config = load_lifecycle_config(tmp_path)
@@ -33,34 +41,36 @@ class TestLoadLifecycleConfig:
             dev_file="compose.dev.yml",
         )
 
-    def test_bare_table_defaults_to_empty(self, tmp_path: Path):
-        _write_pyproject(tmp_path, "[tool.docker-devkit.lifecycle]\n")
+    def test_dev_file_defaults_to_none_when_only_files_declared(self, tmp_path: Path):
+        _write_config(tmp_path, {"lifecycle": {"files": ["compose.yml"]}})
 
         config = load_lifecycle_config(tmp_path)
 
-        assert config == LifecycleConfig()
+        assert config == LifecycleConfig(files=["compose.yml"])
 
-    def test_absent_table_returns_none(self, tmp_path: Path):
-        _write_pyproject(tmp_path, "[tool.docker-devkit.generate-score]\nworkloads = []\n")
+    def test_files_defaults_to_empty_when_only_dev_file_declared(self, tmp_path: Path):
+        _write_config(tmp_path, {"lifecycle": {"dev_file": "compose.dev.yml"}})
+
+        config = load_lifecycle_config(tmp_path)
+
+        assert config == LifecycleConfig(dev_file="compose.dev.yml")
+
+    def test_absent_section_returns_none(self, tmp_path: Path):
+        _write_config(tmp_path, {"mirror": {"prefix": "ghcr.io/x/mirror"}})
 
         assert load_lifecycle_config(tmp_path) is None
 
-    def test_absent_tool_section_returns_none(self, tmp_path: Path):
-        _write_pyproject(tmp_path, "")
-
-        assert load_lifecycle_config(tmp_path) is None
-
-    def test_missing_pyproject_returns_none(self, tmp_path: Path):
+    def test_missing_config_returns_none(self, tmp_path: Path):
         assert load_lifecycle_config(tmp_path) is None
 
     def test_rejects_unknown_keys(self, tmp_path: Path):
-        _write_pyproject(tmp_path, "[tool.docker-devkit.lifecycle]\nfiles = []\nbogus = true\n")
+        _write_config(tmp_path, {"lifecycle": {"files": ["compose.yml"], "bogus": "true"}})
 
         with pytest.raises(ValidationError):
             load_lifecycle_config(tmp_path)
 
-    def test_rejects_non_string_entries(self, tmp_path: Path):
-        _write_pyproject(tmp_path, "[tool.docker-devkit.lifecycle]\nfiles = [1]\n")
+    def test_rejects_scalar_files(self, tmp_path: Path):
+        _write_config(tmp_path, {"lifecycle": {"files": "compose.yml"}})
 
         with pytest.raises(ValidationError):
             load_lifecycle_config(tmp_path)

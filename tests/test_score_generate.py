@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from docker_devkit.score_generate import (
@@ -11,6 +12,14 @@ from docker_devkit.score_generate import (
     write_generated_file,
     load_score_config,
 )
+
+
+def _write_config(root: Path, sections: dict[str, object]) -> None:
+    payload: dict[str, object] = {"requires": ">=0.0"}
+    payload.update(sections)
+    (root / "docker-devkit.yaml").write_text(
+        yaml.safe_dump(payload, default_flow_style=False, sort_keys=False), encoding="utf-8"
+    )
 
 
 def make_config(**overrides: str | list[str]) -> ScoreConfig:
@@ -93,15 +102,18 @@ def test_write_normalises_file_mode(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "content\n"
 
 
-def test_load_score_config_reads_consumer_table(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.docker-devkit.generate-score]\n"
-        'workloads = ["api.yaml"]\n'
-        'project_name = "placeframe"\n'
-        'cloud_storage_class = "hcloud-volumes"\n'
-        'local_storage_class = "local-path"\n'
-        'publishes = ["8000:api:8000"]\n',
-        encoding="utf-8",
+def test_load_score_config_reads_consumer_section(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        {
+            "generate-score": {
+                "workloads": ["api.yaml"],
+                "project_name": "placeframe",
+                "cloud_storage_class": "hcloud-volumes",
+                "local_storage_class": "local-path",
+                "publishes": ["8000:api:8000"],
+            }
+        },
     )
 
     config = load_score_config(tmp_path)
@@ -118,9 +130,7 @@ def test_load_score_config_reads_consumer_table(tmp_path: Path) -> None:
     assert config.score_compose_version == "0.42.0"
 
 
-def test_load_score_config_missing_table_raises(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "consumer"\n', encoding="utf-8")
-
+def test_load_score_config_missing_section_raises(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="generate-score"):
         load_score_config(tmp_path)
 

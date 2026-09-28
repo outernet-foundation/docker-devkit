@@ -57,7 +57,7 @@ def up(
     lock_file = resolve_lock(root, manifest)
 
     if dev and (config is None or config.dev_file is None):
-        raise RuntimeError("--dev requires a dev_file in [tool.docker-devkit.lifecycle]")
+        raise RuntimeError("--dev requires a dev_file in the lifecycle section of docker-devkit.yaml")
 
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found; create one first (e.g., copy .env.example)")

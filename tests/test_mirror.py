@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -40,6 +41,15 @@ LOCKED_ERROR = (
 )
 
 runner = CliRunner()
+
+
+def _write_config(root: Path, sections: dict[str, object] | None = None) -> None:
+    payload: dict[str, object] = {"requires": ">=0.0"}
+    if sections is not None:
+        payload.update(sections)
+    (root / "docker-devkit.yaml").write_text(
+        yaml.safe_dump(payload, default_flow_style=False, sort_keys=False), encoding="utf-8"
+    )
 
 
 class SelectiveExistence:
@@ -139,32 +149,26 @@ class TestInversion:
 
 class TestLoadMirrorConfig:
     def test_loads_declared_prefix(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text(
-            f"[tool.docker-devkit.mirror]\nprefix = '{MIRROR_PREFIX}'\n", encoding="utf-8"
-        )
+        _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
 
         assert mirror.load_mirror_config(tmp_path) == MirrorConfig(prefix=MIRROR_PREFIX)
 
-    def test_absent_table_returns_none(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text("[tool.docker-devkit.lifecycle]\nfiles = []\n", encoding="utf-8")
+    def test_absent_section_returns_none(self, tmp_path: Path):
+        _write_config(tmp_path, {"lifecycle": {"files": ["compose.yml"]}})
 
         assert mirror.load_mirror_config(tmp_path) is None
 
-    def test_missing_pyproject_returns_none(self, tmp_path: Path):
+    def test_missing_config_returns_none(self, tmp_path: Path):
         assert mirror.load_mirror_config(tmp_path) is None
 
     def test_rejects_unknown_keys(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text(
-            "[tool.docker-devkit.mirror]\nprefix = 'ghcr.io/x/mirror'\nbogus = true\n", encoding="utf-8"
-        )
+        _write_config(tmp_path, {"mirror": {"prefix": "ghcr.io/x/mirror", "bogus": "true"}})
 
         with pytest.raises(ValidationError):
             mirror.load_mirror_config(tmp_path)
 
     def test_rejects_trailing_slash_prefix(self, tmp_path: Path):
-        (tmp_path / "pyproject.toml").write_text(
-            "[tool.docker-devkit.mirror]\nprefix = 'ghcr.io/x/mirror/'\n", encoding="utf-8"
-        )
+        _write_config(tmp_path, {"mirror": {"prefix": "ghcr.io/x/mirror/"}})
 
         with pytest.raises(ValidationError):
             mirror.load_mirror_config(tmp_path)
@@ -251,9 +255,7 @@ class TestWriteFallbackOverlay:
 
 class TestMirrorVerb:
     def _write_tree(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f"[tool.docker-devkit.mirror]\nprefix = '{MIRROR_PREFIX}'\n", encoding="utf-8"
-        )
+        _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
         (tmp_path / "workloads").mkdir()
         (tmp_path / "workloads" / "images.yml").write_text(MANIFEST, encoding="utf-8")
 
@@ -281,14 +283,14 @@ class TestMirrorVerb:
 
 
 class TestUpstreamAwareLockResolution:
-    def _write_tree(self, tmp_path: Path, *, mirror_table: bool) -> None:
-        table = f"[tool.docker-devkit.mirror]\nprefix = '{MIRROR_PREFIX}'\n" if mirror_table else ""
-        (tmp_path / "pyproject.toml").write_text(f"[project]\nname = 'stack'\n\n{table}", encoding="utf-8")
+    def _write_tree(self, tmp_path: Path, *, mirror: bool) -> None:
+        if mirror:
+            _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
         (tmp_path / "workloads").mkdir()
         (tmp_path / "workloads" / "images.yml").write_text(MANIFEST, encoding="utf-8")
 
     def test_resolves_mirror_declarations_against_upstream(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._write_tree(tmp_path, mirror_table=True)
+        self._write_tree(tmp_path, mirror=True)
         monkeypatch.chdir(tmp_path)
         recorder = DigestRecorder()
         monkeypatch.setattr(build_docker, "resolve_remote_digest", recorder.resolve)
@@ -305,7 +307,7 @@ class TestUpstreamAwareLockResolution:
         assert f"UV_IMAGE={MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15@{FAKE_DIGEST}" in lock
 
     def test_without_table_inspects_the_declared_reference(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._write_tree(tmp_path, mirror_table=False)
+        self._write_tree(tmp_path, mirror=False)
         monkeypatch.chdir(tmp_path)
         recorder = DigestRecorder()
         monkeypatch.setattr(build_docker, "resolve_remote_digest", recorder.resolve)
@@ -321,10 +323,7 @@ class TestUpstreamAwareLockResolution:
 
 class TestBakeConsumesEnvOverlay:
     def _write_tree(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            f"[project]\nname = 'stack'\n\n[tool.docker-devkit.mirror]\nprefix = '{MIRROR_PREFIX}'\n",
-            encoding="utf-8",
-        )
+        _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
         (tmp_path / "workloads").mkdir()
         (tmp_path / "workloads" / "images.yml").write_text(MANIFEST, encoding="utf-8")
 

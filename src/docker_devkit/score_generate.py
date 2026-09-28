@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,11 +12,11 @@ from typing import Annotated, Literal
 import typer
 import yaml
 from bashrun.bash import bash
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
+from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
-from .image_refs import TomlDocument, TomlValue
 
 # Placeholders in the workload files are ALL-CAPS, so this cannot collide with Score's own
 # lowercase dotted ${resources.db.host} references.
@@ -40,30 +39,6 @@ class ManifestDocument(BaseModel):
     metadata: ManifestMetadata | None = None
 
 
-class ScoreConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    workloads: list[str]
-    project_name: str
-    cloud_storage_class: str
-    local_storage_class: str
-    score_dir: Path = Path("stack/score")
-    bake_file: Path = Path("workloads/images.yml")
-    compose_output: Path = Path("stack/generated/compose/compose.yaml")
-    k8s_output: Path = Path("stack/generated/k8s/manifests.yaml")
-    # --local writes here instead of the committed k8s output; consumers gitignore this path so a
-    # local-only storage class cannot reach the artifact their cluster deploys.
-    k8s_local_output: Path = Path("stack/generated/k8s/manifests.local.yaml")
-    k8s_state: Path = Path("stack/generated/k8s/.score-k8s")
-    storage_class_var: str = "SCORE_STORAGE_CLASS"
-    compose_provisioners: list[str] = Field(default_factory=list)
-    compose_patch_templates: list[str] = Field(default_factory=list)
-    k8s_provisioners: list[str] = Field(default_factory=list)
-    publishes: list[str] = Field(default_factory=list)
-    score_k8s_version: str = "0.15.0"
-    score_compose_version: str = "0.42.0"
-
-
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
@@ -82,16 +57,10 @@ def cli(
 
 
 def load_score_config(root: Path) -> ScoreConfig:
-    value: TomlValue = TomlDocument.model_validate(
-        tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    ).root
-    for component in ("tool", "docker-devkit", "generate-score"):
-        if not isinstance(value, dict) or component not in value:
-            raise RuntimeError(
-                f"[tool.docker-devkit.generate-score] is missing at {component} in {root / 'pyproject.toml'}"
-            )
-        value = value[component]
-    return ScoreConfig.model_validate(value)
+    config = load_config(root)
+    if config is None or config.generate_score is None:
+        raise RuntimeError("a generate-score section is required in docker-devkit.yaml")
+    return config.generate_score
 
 
 def generate(config: ScoreConfig, target: Target = "both", local: bool = False) -> None:

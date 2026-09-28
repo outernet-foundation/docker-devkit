@@ -3,13 +3,12 @@ from __future__ import annotations
 import os
 import shlex
 import tempfile
-import tomllib
 from pathlib import Path
 
 import typer
 from bashrun.bash import bash, bash_check
-from pydantic import BaseModel, ConfigDict, field_validator
 
+from .config import MirrorConfig, load_config
 from .image_refs import ImageReference, declared_references
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
@@ -17,25 +16,12 @@ app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 CRANE_VERSION = "v0.22.1"
 
 
-class MirrorConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    prefix: str
-
-    @field_validator("prefix")
-    @classmethod
-    def _require_bare_prefix(cls, prefix: str) -> str:
-        if not prefix or prefix.endswith("/"):
-            raise ValueError("mirror prefix must be non-empty and carry no trailing slash")
-        return prefix
-
-
 @app.command()
 def mirror() -> None:
     root = Path.cwd()
     config = load_mirror_config(root)
     if config is None:
-        raise RuntimeError("[tool.docker-devkit.mirror] with 'prefix' is required to mirror")
+        raise RuntimeError("a mirror section with 'prefix' is required in docker-devkit.yaml to mirror")
 
     targets = mirror_targets(root, config.prefix)
     print(f"Install crane {CRANE_VERSION}")
@@ -52,14 +38,8 @@ def mirror() -> None:
 
 
 def load_mirror_config(root: Path) -> MirrorConfig | None:
-    pyproject_path = root / "pyproject.toml"
-    if not pyproject_path.exists():
-        return None
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    section = data.get("tool", {}).get("docker-devkit", {}).get("mirror")
-    if section is None:
-        return None
-    return MirrorConfig.model_validate(section)
+    config = load_config(root)
+    return config.mirror if config is not None else None
 
 
 def is_mirrored(reference: str, prefix: str) -> bool:
