@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHON_DEVKIT_VERSION: "0.1.13"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -23,4 +26,4 @@ jobs:
           enable-cache: true
 
       - name: Preflight
-        run: uvx --from python-devkit==0.1.5 preflight-python
+        run: uvx --from python-devkit==${PYTHON_DEVKIT_VERSION} preflight-python
