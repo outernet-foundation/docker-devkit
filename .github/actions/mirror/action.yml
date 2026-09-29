@@ -1,0 +1,26 @@
+name: mirror
+description: Populate the org-owned image mirror from the consumer's declared base images
+
+inputs:
+  ref:
+    description: Checkout ref for the consumer repo (empty = event default)
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v5
+      with:
+        ref: ${{ inputs.ref }}
+        clean: false
+        persist-credentials: false
+
+    - shell: bash
+      run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      env:
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+
+    - uses: astral-sh/setup-uv@v7
+
+    - shell: bash
+      run: uvx --from .docker-devkit mirror
