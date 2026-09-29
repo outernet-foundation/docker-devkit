@@ -12,7 +12,7 @@ on:
     branches: [dev]
 
 env:
-  RELEASE_DEVKIT_SHA: 667ef92354e1fe3a9b5689a7ef4690fa8c249484
+  RELEASE_DEVKIT_VERSION: 0.1.25
 
 permissions:
   contents: read
@@ -39,8 +39,13 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/pin-release-devkit
-      - uses: ./.release-devkit/.github/actions/publish-dry-run
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - shell: bash
+        run: uvx --from release-devkit==${{ env.RELEASE_DEVKIT_VERSION }} publish-stable --dry-run
 
   ensure-release-pr:
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -52,8 +57,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: ./.github/actions/pin-release-devkit
-      - uses: ./.release-devkit/.github/actions/ensure-release-pr
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - shell: bash
+        run: uvx --from release-devkit==${{ env.RELEASE_DEVKIT_VERSION }} ensure-release-pr
 
   publish-stable:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -68,10 +77,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: ./.github/actions/pin-release-devkit
-      - uses: ./.release-devkit/.github/actions/publish-stable
+      - uses: actions/checkout@v5
         with:
           ref: main
+      - run: git fetch --tags origin
+        shell: bash
+      - uses: astral-sh/setup-uv@v7
+      - shell: bash
+        run: uvx --from release-devkit==${{ env.RELEASE_DEVKIT_VERSION }} publish-stable
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
 
   publish-dev:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
@@ -86,8 +101,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: ./.github/actions/pin-release-devkit
-      - uses: ./.release-devkit/.github/actions/publish-dev
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-          run-id: ${{ github.event.workflow_run.id }}
+          persist-credentials: false
+      - run: git fetch --tags origin
+        shell: bash
+      - uses: astral-sh/setup-uv@v7
+      - shell: bash
+        run: uvx --from release-devkit==${{ env.RELEASE_DEVKIT_VERSION }} publish-dev --run-id ${{ github.event.workflow_run.id }}
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
