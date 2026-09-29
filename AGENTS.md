@@ -12,9 +12,9 @@ Config surfaces org-wide follow one law (its home is release-devkit's `AGENTS.md
 
 Publishing rides `ci-cd.yml` via release-devkit's publish composites (run-from-source, SHA-pinned — see release-devkit's `AGENTS.md`), never a project dependency (docker-devkit sits inside its own dependency graph; a project-level release-devkit edge is a resolver cycle), under OIDC trusted publishing (publisher bound to `ci-cd.yml`, `release` environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `docker-devkit-v*` tags are the version ledger (declared `major_minor` line in `release-devkit.yaml`, patch-auto within the line). While pre-1.0, breaking changes ride the normal patch flow without a bump; from 1.0 on, API-breaking changes ship with a manually bumped `major_minor` — patch-auto assumes additive changes.
 
-## Mirror composite
+## Mirror consumption
 
-The `mirror` composite in `.github/actions/mirror/` is the consumer-facing surface for the image-mirror job: self-contained (consumer checkout with a `ref` input + ghcr login + `setup-uv` + `uvx --from .docker-devkit mirror`), run-from-source so the consumer's SHA pin is the version. A consumer's `mirror` job is two steps — `pin-docker-devkit` (consumer-local bootstrap checking out this repo at `${{ env.DOCKER_DEVKIT_SHA }}` into `.docker-devkit/`) then `uses: ./.docker-devkit/.github/actions/mirror` — and carries `permissions: { contents: read, packages: write }` + `env: GITHUB_TOKEN`. The composite's checkout uses `clean: false` so the bootstrap's `.docker-devkit/` survives. Only repos with docker images (placeframe, capture-tool) have a `mirror` job; pure-Python devkits do not.
+Consumers with docker images (placeframe, capture-tool) run `mirror` via the docker-devkit PyPI dependency — inline in their `mirror` job (checkout + `setup-uv` + ghcr login + `uv run mirror`), version-sourced by the consumer's `uv.lock`. The job carries `permissions: { contents: read, packages: write }` + `env: GITHUB_TOKEN` (ghcr login for `crane copy`). Pure-Python devkits have no `mirror` job.
 
 ## Shape
 
