@@ -10,7 +10,7 @@ Config surfaces org-wide follow one law (its home is release-devkit's `AGENTS.md
 
 ## Release flow
 
-Publishing rides `ci-cd.yml` via release-devkit's publish composites (run-from-source, SHA-pinned — see release-devkit's `AGENTS.md`), never a project dependency (docker-devkit sits inside its own dependency graph; a project-level release-devkit edge is a resolver cycle), under OIDC trusted publishing (publisher bound to `ci-cd.yml`, `release` environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `docker-devkit-v*` tags are the version ledger (declared `major_minor` line in `release-devkit.yaml`, patch-auto within the line). While pre-1.0, breaking changes ride the normal patch flow without a bump; from 1.0 on, API-breaking changes ship with a manually bumped `major_minor` — patch-auto assumes additive changes.
+Publishing rides `ci-cd.yml` via inlined `uvx --from release-devkit==${{ env.RELEASE_DEVKIT_VERSION }}` steps, version-pinned in the workflow `env:` (see release-devkit's `AGENTS.md`), never a project dependency (docker-devkit sits inside its own dependency graph; a project-level release-devkit edge is a resolver cycle), under OIDC trusted publishing (publisher bound to `ci-cd.yml`, `release` environment). The committed `pyproject.toml` version is permanently the `0.0.0.dev0` sentinel; the `docker-devkit-v*` tags are the version ledger (declared `major_minor` line in `release-devkit.yaml`, patch-auto within the line). While pre-1.0, breaking changes ride the normal patch flow without a bump; from 1.0 on, API-breaking changes ship with a manually bumped `major_minor` — patch-auto assumes additive changes.
 
 ## Mirror consumption
 
