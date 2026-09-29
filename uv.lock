@@ -42,6 +42,20 @@ wheels = [
 ]
 
 [[package]]
+name = "ci-devkit"
+version = "0.1.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bashrun" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0c/c3/4fa23868b52713a8ed871334fb12f3473cc9f8778d8c09ef5b57aa7f5ff0/ci_devkit-0.1.13.tar.gz", hash = "sha256:8b750c1f0b953bc045e206a5a39093f3cde824b2f3dfdc5d3810d55372c3da4f", size = 40536, upload-time = "2026-09-28T07:48:31.116Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6a/9a/388cc8375cb2bab3c1cbb9d7d96eb5abb951a4b037aafbf3c88d4c02cae3/ci_devkit-0.1.13-py3-none-any.whl", hash = "sha256:7b08f1b21691e3855b7747e060e1bc6e441664386ba346093bd14bd5327cffdd", size = 25686, upload-time = "2026-09-28T07:48:30.104Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -69,6 +83,7 @@ dependencies = [
 dev = [
     { name = "basedpyright" },
     { name = "pytest" },
+    { name = "python-devkit" },
     { name = "ruff" },
     { name = "types-pyyaml" },
     { name = "types-strictyaml" },
@@ -90,6 +105,7 @@ requires-dist = [
 dev = [
     { name = "basedpyright", specifier = ">=1.39.10" },
     { name = "pytest", specifier = ">=8.0.0" },
+    { name = "python-devkit", specifier = ">=0.1.0" },
     { name = "ruff", specifier = ">=0.14.11" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
     { name = "types-strictyaml", specifier = ">=1.7.3.3" },
@@ -288,6 +304,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
+name = "python-devkit"
+version = "0.1.14"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bashrun" },
+    { name = "ci-devkit" },
+    { name = "pydantic" },
+    { name = "typer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0a/3c/4b64ad57a191fc8f6c1cf7d45619a0cc27e05bc68a1d019f67e61a68a0be/python_devkit-0.1.14.tar.gz", hash = "sha256:0e2d4f4acee43ffb13eb52b03b4f25378d28869864f7e6f4825c936f441dff2f", size = 34183, upload-time = "2026-09-28T23:51:28.654Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/7c/c0a7820892b8ba0c889b3ba20f1271f6fb2883b1fd3f846bd49607ad475d/python_devkit-0.1.14-py3-none-any.whl", hash = "sha256:309c7ed1cb6ca8ba831d961cc8725f177c71af2b57083da0a169398535b4dfb8", size = 14261, upload-time = "2026-09-28T23:51:27.769Z" },
 ]
 
 [[package]]

@@ -12,7 +12,6 @@ on:
     branches: [dev]
 
 env:
-  PYTHON_DEVKIT_SHA: 048919f2ac485d49f5863a014b4cda628779635a
   RELEASE_DEVKIT_SHA: 667ef92354e1fe3a9b5689a7ef4690fa8c249484
 
 permissions:
@@ -27,8 +26,13 @@ jobs:
     if: github.event_name != 'workflow_run' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/pin-python-devkit
-      - uses: ./.python-devkit/.github/actions/preflight
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv run preflight-python
 
   publish-dry-run:
     if: github.event_name != 'workflow_run' && github.ref != 'refs/heads/main'

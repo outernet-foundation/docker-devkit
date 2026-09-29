@@ -19,6 +19,7 @@ dev = [
     "basedpyright>=1.39.10",
     "ruff>=0.14.11",
     "pytest>=8.0.0",
+    "python-devkit>=0.1.0",
     "types-pyyaml>=6.0.12.20260906",
     "types-strictyaml>=1.7.3.3",
 ]
