@@ -19,6 +19,7 @@ dev = [
     "basedpyright>=1.39.10",
     "ruff>=0.14.11",
     "pytest>=8.0.0",
+    "python-devkit>=0.1.0",
     "types-pyyaml>=6.0.12.20260906",
     "types-strictyaml>=1.7.3.3",
 ]
@@ -33,6 +34,7 @@ down = "docker_devkit.down:app"
 build = "docker_devkit.build_docker:app"
 mirror = "docker_devkit.mirror:app"
 generate-score = "docker_devkit.score_generate:app"
+docker-build-matrix = "docker_devkit.matrix:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docker_devkit"]

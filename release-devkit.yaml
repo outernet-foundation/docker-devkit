@@ -1,5 +1,5 @@
 requires: ">=0.1"
-ci_workflow: ci.yml
+ci_workflow: ci-cd.yml
 packages:
   docker-devkit:
     path: .
