@@ -34,25 +34,25 @@ wheels = [
 
 [[package]]
 name = "bashrun"
-version = "0.1.0"
+version = "0.1.12"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/24/cd/dc3df91cbe2bfbe57b6d9bfe225f5808a22888d636cf30005d89133237c8/bashrun-0.1.0.tar.gz", hash = "sha256:e376f34693ba12ec907a6ab43626ed425c876c2b7be6569563a6492e11c79bc7", size = 18983, upload-time = "2026-09-21T01:47:56.971Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/2c/742acb113293e712d82c5cfce35a30f344385a7d9852d5844b0bcff4f12f/bashrun-0.1.12.tar.gz", hash = "sha256:d5fd926ec1cb1df6e218a98fe8ad737c24b72bcf740bdfbe2ecf4c77894878a0", size = 32364, upload-time = "2026-09-30T04:02:19.854Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/9a/749dd28f3defde3690e0280131f9461e4100c43c117f9363798f6dedbb91/bashrun-0.1.0-py3-none-any.whl", hash = "sha256:80f87924f88336460890d669aa1abb6fb8c389b675fdb41ac8d2b6861d4ebddb", size = 7634, upload-time = "2026-09-21T01:47:56.233Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/1d/4de203dbe4d711b39f7b440bd141b429864e2a3539faa9b6531eab456195/bashrun-0.1.12-py3-none-any.whl", hash = "sha256:9a188b90eb25249d24556dcdaccfa09ca3efe741406a1c71c7e3cecd170f41b0", size = 7511, upload-time = "2026-09-30T04:02:18.991Z" },
 ]
 
 [[package]]
 name = "ci-devkit"
-version = "0.1.13"
+version = "0.1.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/c3/4fa23868b52713a8ed871334fb12f3473cc9f8778d8c09ef5b57aa7f5ff0/ci_devkit-0.1.13.tar.gz", hash = "sha256:8b750c1f0b953bc045e206a5a39093f3cde824b2f3dfdc5d3810d55372c3da4f", size = 40536, upload-time = "2026-09-28T07:48:31.116Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/25/dc42c65e6147eb64477eae4f410b26d630f03f46c3d3bdcdab374df28081/ci_devkit-0.1.14.tar.gz", hash = "sha256:f8b45fa995bba626edda29c191883224173155a39137da5a1bc67f09ad28d337", size = 51204, upload-time = "2026-09-30T04:06:27.581Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/9a/388cc8375cb2bab3c1cbb9d7d96eb5abb951a4b037aafbf3c88d4c02cae3/ci_devkit-0.1.13-py3-none-any.whl", hash = "sha256:7b08f1b21691e3855b7747e060e1bc6e441664386ba346093bd14bd5327cffdd", size = 25686, upload-time = "2026-09-28T07:48:30.104Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/08/56cafd065e2d00ad90d450867282d79469bc4c7c9eefa1dc11dcf84e0c96/ci_devkit-0.1.14-py3-none-any.whl", hash = "sha256:64b74d797a040d8d57735eda30dbb59844d0de9c64e53dd24e9769d10bc34e18", size = 25689, upload-time = "2026-09-30T04:06:26.522Z" },
 ]
 
 [[package]]
@@ -308,7 +308,7 @@ wheels = [
 
 [[package]]
 name = "python-devkit"
-version = "0.1.14"
+version = "0.1.15"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
@@ -316,9 +316,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/3c/4b64ad57a191fc8f6c1cf7d45619a0cc27e05bc68a1d019f67e61a68a0be/python_devkit-0.1.14.tar.gz", hash = "sha256:0e2d4f4acee43ffb13eb52b03b4f25378d28869864f7e6f4825c936f441dff2f", size = 34183, upload-time = "2026-09-28T23:51:28.654Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/53/c3b37f69c35475b09cdf1c18deb193238d7ab5143ee6bc97e5c22c48fe87/python_devkit-0.1.15.tar.gz", hash = "sha256:ac1ef0f2a4622e9c97763f4e353005c41164e2d6d4b130cdb709e811947f253d", size = 34651, upload-time = "2026-09-30T04:12:18.88Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/27/7c/c0a7820892b8ba0c889b3ba20f1271f6fb2883b1fd3f846bd49607ad475d/python_devkit-0.1.14-py3-none-any.whl", hash = "sha256:309c7ed1cb6ca8ba831d961cc8725f177c71af2b57083da0a169398535b4dfb8", size = 14261, upload-time = "2026-09-28T23:51:27.769Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/81/da4f76cbfccb5a4d5a58a9f51d3e2b7d40f6dc9edd931d7891b2789adeae/python_devkit-0.1.15-py3-none-any.whl", hash = "sha256:0c13684cc780e3ba9b3e25feed61065b355e8fc7436bee043e7c6adf71fa40e7", size = 14537, upload-time = "2026-09-30T04:12:17.918Z" },
 ]
 
 [[package]]
