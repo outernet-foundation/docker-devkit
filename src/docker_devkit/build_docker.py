@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 
 import typer
 from bashrun.bash import bash, bash_output
+from ci_devkit.builds import push_build
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, digest_pinned, parse_bake
 from pydantic_settings import BaseSettings
@@ -31,6 +32,7 @@ METADATA_PATH = Path("metadata.json")
 
 Mode = Literal["local", "ci"]
 
+IMAGES_LOCK_PLATFORM = "images-lock"
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
@@ -51,6 +53,17 @@ def build(
         list[str] | None,
         typer.Option("--targets", "-t", help="Build only these services (from the image manifest)."),
     ] = None,
+    builds_registry: Annotated[
+        str | None,
+        typer.Option("--builds-registry", help="OCI registry path to push the resolved lock to (CI build artifacts)."),
+    ] = None,
+    lock_project: Annotated[
+        str | None,
+        typer.Option("--lock-project", help="Project component of the lock's builds-shelf address (CI only)."),
+    ] = None,
+    run_number: Annotated[
+        int, typer.Option("--run-number", help="CI run number baked into the lock's builds-shelf tag.")
+    ] = 0,
 ) -> None:
     run_build(
         upgrade=upgrade,
@@ -60,6 +73,9 @@ def build(
         gpu_only=gpu_only,
         no_cache=no_cache,
         targets_opt=targets_opt,
+        builds_registry=builds_registry,
+        lock_project=lock_project,
+        run_number=run_number,
     )
 
 
@@ -73,6 +89,9 @@ def run_build(
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
     env_overlay: dict[str, str] | None = None,
+    builds_registry: str | None = None,
+    lock_project: str | None = None,
+    run_number: int = 0,
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
@@ -203,6 +222,23 @@ def run_build(
     baked_images: dict[str, Any] = json.loads(METADATA_PATH.read_text()) if METADATA_PATH.exists() else {}
     if not set(targets) <= baked_images.keys():
         raise RuntimeError("Bake output does not cover the requested targets")
+
+    push_images_lock(builds_registry, lock_project, run_number, lock_file)
+
+
+def push_images_lock(builds_registry: str | None, lock_project: str | None, run_number: int, lock_file: Path) -> None:
+    if builds_registry is None:
+        return
+    if not lock_project or run_number <= 0:
+        raise typer.BadParameter("--builds-registry requires --lock-project and a positive --run-number")
+    push_build(
+        builds_registry,
+        lock_project,
+        IMAGES_LOCK_PLATFORM,
+        f"run-{run_number}",
+        lock_file.parent,
+        [lock_file.name],
+    )
 
 
 # Vibe code - Gemini 3

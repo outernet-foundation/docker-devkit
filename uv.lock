@@ -43,16 +43,16 @@ wheels = [
 
 [[package]]
 name = "ci-devkit"
-version = "0.1.14"
+version = "0.1.15.dev36756330648"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/25/dc42c65e6147eb64477eae4f410b26d630f03f46c3d3bdcdab374df28081/ci_devkit-0.1.14.tar.gz", hash = "sha256:f8b45fa995bba626edda29c191883224173155a39137da5a1bc67f09ad28d337", size = 51204, upload-time = "2026-09-30T04:06:27.581Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/1e/fdad4f4fd539491f8ddeaf45e349801b274e9f7a8b00f768c6e83df1b97d/ci_devkit-0.1.15.dev36756330648.tar.gz", hash = "sha256:55b497b377a5e10e85c773b57897e4d1f883129b45567d1ecb581c02a18eabe4", size = 53675, upload-time = "2026-09-30T18:10:54.868Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4f/08/56cafd065e2d00ad90d450867282d79469bc4c7c9eefa1dc11dcf84e0c96/ci_devkit-0.1.14-py3-none-any.whl", hash = "sha256:64b74d797a040d8d57735eda30dbb59844d0de9c64e53dd24e9769d10bc34e18", size = 25689, upload-time = "2026-09-30T04:06:26.522Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/1e/9f81e475c3cc65febb1e9013caf13dd20b393275c785713a7a85498dfcbc/ci_devkit-0.1.15.dev36756330648-py3-none-any.whl", hash = "sha256:4189adc38d182591cabef7e06321ae1105cdb9fb915f38d90d352a3f277630aa", size = 28208, upload-time = "2026-09-30T18:10:54.044Z" },
 ]
 
 [[package]]
@@ -70,6 +70,7 @@ version = "0.0.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "bashrun" },
+    { name = "ci-devkit" },
     { name = "packaging" },
     { name = "pathspec" },
     { name = "pydantic" },
@@ -92,6 +93,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bashrun", specifier = ">=0.1.0" },
+    { name = "ci-devkit", specifier = "==0.1.15.dev36756330648" },
     { name = "packaging", specifier = ">=24.1" },
     { name = "pathspec", specifier = ">=1.0.4" },
     { name = "pydantic", specifier = ">=2.11.7" },
