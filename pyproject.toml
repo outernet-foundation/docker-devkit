@@ -34,6 +34,7 @@ down = "docker_devkit.down:app"
 build = "docker_devkit.build_docker:app"
 mirror = "docker_devkit.mirror:app"
 generate-score = "docker_devkit.score_generate:app"
+docker-build-matrix = "docker_devkit.matrix:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docker_devkit"]
