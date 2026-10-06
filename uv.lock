@@ -43,16 +43,16 @@ wheels = [
 
 [[package]]
 name = "ci-devkit"
-version = "0.1.15.dev36756330648"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5c/1e/fdad4f4fd539491f8ddeaf45e349801b274e9f7a8b00f768c6e83df1b97d/ci_devkit-0.1.15.dev36756330648.tar.gz", hash = "sha256:55b497b377a5e10e85c773b57897e4d1f883129b45567d1ecb581c02a18eabe4", size = 53675, upload-time = "2026-09-30T18:10:54.868Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/c6/94c2a4a406b593ca3a1140151c0cb2c1367b30bf295f32a4bf9c92c100ac/ci_devkit-0.2.0.tar.gz", hash = "sha256:a16e0a91771a5b50205646577e8d56198c7c3262a063d7ebcf9a82fc26a2e3e0", size = 53288, upload-time = "2026-10-05T15:02:35.926Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/1e/9f81e475c3cc65febb1e9013caf13dd20b393275c785713a7a85498dfcbc/ci_devkit-0.1.15.dev36756330648-py3-none-any.whl", hash = "sha256:4189adc38d182591cabef7e06321ae1105cdb9fb915f38d90d352a3f277630aa", size = 28208, upload-time = "2026-09-30T18:10:54.044Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/d7/f7b91b7e62ed5cd7864f4ddbf84851ad5a31938342cb00e28bf15a7064c2/ci_devkit-0.2.0-py3-none-any.whl", hash = "sha256:d86403effbe36563b0a471d860e5e1e46ae7793d7d203a2dcc5561e91d1163f6", size = 28022, upload-time = "2026-10-05T15:02:34.654Z" },
 ]
 
 [[package]]
@@ -93,7 +93,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bashrun", specifier = ">=0.1.0" },
-    { name = "ci-devkit", specifier = "==0.1.15.dev36756330648" },
+    { name = "ci-devkit", specifier = ">=0.1.15" },
     { name = "packaging", specifier = ">=24.1" },
     { name = "pathspec", specifier = ">=1.0.4" },
     { name = "pydantic", specifier = ">=2.11.7" },
