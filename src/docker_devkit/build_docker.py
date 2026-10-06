@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal, TypedDict
 import typer
 from bashrun.bash import bash, bash_output
 from ci_devkit.builds import push_build
+from ci_devkit.setup_oras import install_oras
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, digest_pinned, parse_bake
 from pydantic_settings import BaseSettings
@@ -242,6 +243,7 @@ def push_image_digests(
         return
     if run_number <= 0:
         raise typer.BadParameter("--builds-registry requires a positive --run-number")
+    install_oras()
     manifest = distill_digest_manifest(baked_images, targets)
     with TemporaryDirectory(prefix="digest-manifest-") as staging:
         manifest_path = Path(staging) / DIGEST_FILE_NAME
