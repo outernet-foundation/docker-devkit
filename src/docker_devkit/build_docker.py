@@ -6,7 +6,8 @@ import platform
 import re
 from pathlib import Path
 from subprocess import CalledProcessError
-from typing import Annotated, Any, Literal
+from tempfile import TemporaryDirectory
+from typing import Annotated, Any, Literal, TypedDict
 
 import typer
 from bashrun.bash import bash, bash_output
@@ -32,7 +33,16 @@ METADATA_PATH = Path("metadata.json")
 
 Mode = Literal["local", "ci"]
 
-IMAGES_LOCK_PLATFORM = "images-lock"
+DIGEST_PROJECT = "images-digests"
+DIGEST_PLATFORM = "all"
+DIGEST_FILE_NAME = "images-digests.json"
+
+
+class DigestEntry(TypedDict):
+    ref: str
+    digest: str
+    tags: list[str]
+
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
@@ -55,14 +65,12 @@ def build(
     ] = None,
     builds_registry: Annotated[
         str | None,
-        typer.Option("--builds-registry", help="OCI registry path to push the resolved lock to (CI build artifacts)."),
-    ] = None,
-    lock_project: Annotated[
-        str | None,
-        typer.Option("--lock-project", help="Project component of the lock's builds-shelf address (CI only)."),
+        typer.Option(
+            "--builds-registry", help="OCI registry path to push the digest manifest to (CI build artifacts)."
+        ),
     ] = None,
     run_number: Annotated[
-        int, typer.Option("--run-number", help="CI run number baked into the lock's builds-shelf tag.")
+        int, typer.Option("--run-number", help="CI run number baked into the digest manifest's builds-shelf tag.")
     ] = 0,
 ) -> None:
     run_build(
@@ -74,7 +82,6 @@ def build(
         no_cache=no_cache,
         targets_opt=targets_opt,
         builds_registry=builds_registry,
-        lock_project=lock_project,
         run_number=run_number,
     )
 
@@ -90,7 +97,6 @@ def run_build(
     targets_opt: list[str] | None = None,
     env_overlay: dict[str, str] | None = None,
     builds_registry: str | None = None,
-    lock_project: str | None = None,
     run_number: int = 0,
 ) -> None:
     root = Path.cwd()
@@ -223,22 +229,50 @@ def run_build(
     if not set(targets) <= baked_images.keys():
         raise RuntimeError("Bake output does not cover the requested targets")
 
-    push_images_lock(builds_registry, lock_project, run_number, lock_file)
+    push_image_digests(builds_registry, run_number, baked_images, targets)
 
 
-def push_images_lock(builds_registry: str | None, lock_project: str | None, run_number: int, lock_file: Path) -> None:
+def push_image_digests(
+    builds_registry: str | None,
+    run_number: int,
+    baked_images: dict[str, Any],
+    targets: list[str],
+) -> None:
     if builds_registry is None:
         return
-    if not lock_project or run_number <= 0:
-        raise typer.BadParameter("--builds-registry requires --lock-project and a positive --run-number")
-    push_build(
-        builds_registry,
-        lock_project,
-        IMAGES_LOCK_PLATFORM,
-        f"run-{run_number}",
-        lock_file.parent,
-        [lock_file.name],
-    )
+    if run_number <= 0:
+        raise typer.BadParameter("--builds-registry requires a positive --run-number")
+    manifest = distill_digest_manifest(baked_images, targets)
+    with TemporaryDirectory(prefix="digest-manifest-") as staging:
+        manifest_path = Path(staging) / DIGEST_FILE_NAME
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        push_build(
+            builds_registry,
+            DIGEST_PROJECT,
+            DIGEST_PLATFORM,
+            f"run-{run_number}",
+            Path(staging),
+            [DIGEST_FILE_NAME],
+        )
+
+
+def distill_digest_manifest(baked_images: dict[str, Any], targets: list[str]) -> dict[str, DigestEntry]:
+    manifest: dict[str, DigestEntry] = {}
+    for target in targets:
+        entry = baked_images[target]
+        image_name = entry["image.name"]
+        digest = entry["containerimage.digest"]
+        refs = [reference.strip() for reference in image_name.split(",") if reference.strip()]
+        image_ref = ""
+        tags: list[str] = []
+        for reference in refs:
+            reference = reference.split("@", 1)[0]
+            repository, separator, tag = reference.rpartition(":")
+            if separator:
+                image_ref = repository
+                tags.append(tag)
+        manifest[target] = {"ref": image_ref, "digest": digest, "tags": tags}
+    return manifest
 
 
 # Vibe code - Gemini 3
