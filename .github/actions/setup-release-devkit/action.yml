@@ -5,7 +5,7 @@ runs:
   steps:
     - shell: bash
       env:
-        RELEASE_DEVKIT_COMMIT: 1130b982aeb956a42b7bf9000ad231eaade593bf
+        RELEASE_DEVKIT_COMMIT: ed406a0d88445dd601b7cbe47decbb6371694e3a
       run: |
         git clone https://github.com/outernet-foundation/release-devkit.git "$RUNNER_TEMP/release-devkit"
         git -C "$RUNNER_TEMP/release-devkit" checkout "$RELEASE_DEVKIT_COMMIT"
