@@ -11,12 +11,14 @@ permissions:
   contents: read
 
 jobs:
-  publish-prerelease:
+  prerelease:
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
+      packages: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -31,7 +33,9 @@ jobs:
           save-cache: "false"
       - &setup-release-devkit
         uses: ./.github/actions/setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev publish-prerelease
+      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev prerelease
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
   release:
     if: github.ref == 'refs/heads/main'
