@@ -64,15 +64,6 @@ def build(
         list[str] | None,
         typer.Option("--targets", "-t", help="Build only these services (from the image manifest)."),
     ] = None,
-    builds_registry: Annotated[
-        str | None,
-        typer.Option(
-            "--builds-registry", help="OCI registry path to push the digest manifest to (CI build artifacts)."
-        ),
-    ] = None,
-    run_number: Annotated[
-        int, typer.Option("--run-number", help="CI run number baked into the digest manifest's builds-shelf tag.")
-    ] = 0,
 ) -> None:
     run_build(
         upgrade=upgrade,
@@ -82,8 +73,6 @@ def build(
         gpu_only=gpu_only,
         no_cache=no_cache,
         targets_opt=targets_opt,
-        builds_registry=builds_registry,
-        run_number=run_number,
     )
 
 
@@ -97,8 +86,6 @@ def run_build(
     no_cache: bool = False,
     targets_opt: list[str] | None = None,
     env_overlay: dict[str, str] | None = None,
-    builds_registry: str | None = None,
-    run_number: int = 0,
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
@@ -230,29 +217,32 @@ def run_build(
     if not set(targets) <= baked_images.keys():
         raise RuntimeError("Bake output does not cover the requested targets")
 
-    push_image_digests(builds_registry, run_number, baked_images, targets)
+    # Push the digest manifest to the repo's builds shelf (address and SHA derived, never flagged)
+    if mode == "ci":
+        github_repository = os.environ.get("GITHUB_REPOSITORY", "")
+        if not github_repository:
+            raise SystemExit("GITHUB_REPOSITORY not set — ci mode reads the GitHub runner environment")
+        shelf = f"ghcr.io/{github_repository}/builds"
+        sha = bash_output("git rev-parse HEAD").strip()
+        push_image_digests(shelf, sha, baked_images, targets)
 
 
 def push_image_digests(
-    builds_registry: str | None,
-    run_number: int,
+    shelf: str,
+    sha: str,
     baked_images: dict[str, Any],
     targets: list[str],
 ) -> None:
-    if builds_registry is None:
-        return
-    if run_number <= 0:
-        raise typer.BadParameter("--builds-registry requires a positive --run-number")
     install_oras()
     manifest = distill_digest_manifest(baked_images, targets)
     with TemporaryDirectory(prefix="digest-manifest-") as staging:
         manifest_path = Path(staging) / DIGEST_FILE_NAME
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         push_build(
-            builds_registry,
+            shelf,
             DIGEST_PROJECT,
             DIGEST_PLATFORM,
-            f"run-{run_number}",
+            f"sha-{sha}",
             Path(staging),
             [DIGEST_FILE_NAME],
         )
@@ -273,6 +263,8 @@ def distill_digest_manifest(baked_images: dict[str, Any], targets: list[str]) ->
             if separator:
                 image_ref = repository
                 tags.append(tag)
+        if not tags:
+            raise ValueError(f"target '{target}' produced no tagged image references from '{image_name}'")
         manifest[target] = {"ref": image_ref, "digest": digest, "tags": tags}
     return manifest
 

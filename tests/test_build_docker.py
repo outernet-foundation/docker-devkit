@@ -3,13 +3,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import typer
 
 from docker_devkit import build_docker
 from docker_devkit.build_docker import DIGEST_FILE_NAME, distill_digest_manifest, push_image_digests
 
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
+BUILD_SHA = "c" * 40
 REPO_ZED = "ghcr.io/outernet-foundation/placeframe-capture-tool/zed-capture"
 REPO_AOA = "ghcr.io/outernet-foundation/placeframe-capture-tool/aoa-bridge"
 
@@ -45,9 +45,9 @@ def test_distills_single_target_single_tag() -> None:
 
 
 def test_distills_multiple_tags_from_comma_separated_refs() -> None:
-    baked = _baked("zed-capture", refs=f"{REPO_ZED}:tree-abc,{REPO_ZED}:run-42", digest=DIGEST_A)
+    baked = _baked("zed-capture", refs=f"{REPO_ZED}:tree-abc,{REPO_ZED}:latest", digest=DIGEST_A)
     assert distill_digest_manifest(baked, ["zed-capture"]) == {
-        "zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "run-42"]}
+        "zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "latest"]}
     }
 
 
@@ -69,31 +69,24 @@ def test_strips_digest_suffix_from_refs() -> None:
     assert entry["tags"] == ["tree-abc"]
 
 
-def test_push_image_digests_is_noop_without_builds_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = PushBuildRecorder()
-    monkeypatch.setattr(build_docker, "push_build", recorder)
-    baked = _baked("zed-capture", refs=f"{REPO_ZED}:tree-abc", digest=DIGEST_A)
-    push_image_digests(None, 42, baked, ["zed-capture"])
-    assert recorder.calls == []
-
-
-def test_push_image_digests_rejects_zero_run_number() -> None:
-    with pytest.raises(typer.BadParameter):
-        push_image_digests("ghcr.io/owner/builds", 0, {}, [])
+def test_refuses_target_with_no_tagged_references() -> None:
+    baked = _baked("zed-capture", refs=f"{REPO_ZED}@{DIGEST_A}", digest=DIGEST_A)
+    with pytest.raises(ValueError, match="zed-capture"):
+        distill_digest_manifest(baked, ["zed-capture"])
 
 
 def test_push_image_digests_pushes_manifest_to_images_digests_all(monkeypatch: pytest.MonkeyPatch) -> None:
     recorder = PushBuildRecorder()
     monkeypatch.setattr(build_docker, "push_build", recorder)
-    baked = _baked("zed-capture", refs=f"{REPO_ZED}:tree-abc,{REPO_ZED}:run-42", digest=DIGEST_A)
-    push_image_digests("ghcr.io/owner/builds", 42, baked, ["zed-capture"])
+    baked = _baked("zed-capture", refs=f"{REPO_ZED}:tree-abc,{REPO_ZED}:latest", digest=DIGEST_A)
+    push_image_digests("ghcr.io/owner/builds", BUILD_SHA, baked, ["zed-capture"])
     assert len(recorder.calls) == 1
     registry, project, platform, tag, _source_directory, paths = recorder.calls[0]
     assert registry == "ghcr.io/owner/builds"
     assert project == "images-digests"
     assert platform == "all"
-    assert tag == "run-42"
+    assert tag == f"sha-{BUILD_SHA}"
     assert paths == [DIGEST_FILE_NAME]
     assert recorder.manifests == [
-        {"zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "run-42"]}}
+        {"zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "latest"]}}
     ]
