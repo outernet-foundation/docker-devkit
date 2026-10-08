@@ -54,3 +54,24 @@ jobs:
       - *uv-restore
       - *setup-release-devkit
       - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev validate-release-plan
+
+  update-pr-draft-release:
+    if: github.event.pull_request
+    needs: [validate-release-plan]
+    permissions:
+      contents: write
+      packages: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Perform a full clone, required for tags
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - *uv-restore
+      - *setup-release-devkit
+      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev release --channel pr
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
