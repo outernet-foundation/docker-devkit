@@ -18,7 +18,6 @@ jobs:
       contents: write
       id-token: write
       packages: read
-      actions: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -33,7 +32,7 @@ jobs:
           save-cache: "false"
       - &setup-release-devkit
         uses: ./.github/actions/setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev prerelease
+      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev release --channel dev
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -53,6 +52,6 @@ jobs:
           persist-credentials: true
       - *uv-restore
       - *setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev release
+      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev release --channel stable
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -1,7 +1,6 @@
-ci_workflow: release.yml
 packages:
   docker-devkit:
     path: .
     major_minor: "0.2"
-    registries:
-      pypi: docker-devkit
+    registry: pypi
+    identity: docker-devkit

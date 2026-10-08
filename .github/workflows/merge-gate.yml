@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
-          # Perform a full clone, required so merge-gate can validate that this PR is a fast forward from dev
+          # Perform a full clone, required so merge-gate can validate that this PR is a semi-linear merge into dev
           fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@v7
@@ -35,7 +35,6 @@ jobs:
         with:
           app-id: ${{ vars.MERGE_BOT_APP_ID }}
           private-key: ${{ secrets.MERGE_BOT_APP_PRIVATE_KEY }}
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev merge-gate
+      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev merge-gate --head-sha ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
         env:
           GITHUB_TOKEN: ${{ steps.mint.outputs.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
