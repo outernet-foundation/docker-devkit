@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import re
 import shlex
 import tomllib
@@ -21,17 +21,7 @@ DIGEST_PATTERN = re.compile(r"^Digest:\s+(sha256:[a-f0-9]+)", re.MULTILINE)
 MISSING_VERSION = "<missing>"
 
 
-type TomlValue = (
-    str
-    | int
-    | float
-    | bool
-    | datetime.datetime
-    | datetime.date
-    | datetime.time
-    | list[TomlValue]
-    | dict[str, TomlValue]
-)
+type TomlValue = str | int | float | bool | dt.datetime | dt.date | dt.time | list[TomlValue] | dict[str, TomlValue]
 
 
 class TomlDocument(RootModel[TomlValue]):

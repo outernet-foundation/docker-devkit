@@ -13,65 +13,12 @@ permissions:
   contents: read
 
 jobs:
-  lint-workflows:
-    runs-on: ubuntu-latest
-    steps:
-      - &checkout
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - &uv-restore
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          save-cache: "false"
-      - &setup-release-devkit
-        uses: ./.github/actions/setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev lint-workflows
-
   preflight:
-    needs: [lint-workflows]
-    runs-on: ubuntu-latest
-    steps:
-      - *checkout
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          save-cache: "true"
-      - run: uv run preflight-python
-
-  validate-release-plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          # Perform a full clone, required for tags
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-      - *uv-restore
-      - *setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev validate-release-plan
+    uses: outernet-foundation/github-actions-toolkit/.github/workflows/preflight.yml@66df38b08b8209b587de1c140b720d835ed8a3c3
 
   update-pr-draft-release:
-    if: github.event.pull_request
-    needs: [validate-release-plan]
+    needs: [preflight]
     permissions:
       contents: write
       packages: read
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          # Perform a full clone, required for tags
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-      - *uv-restore
-      - *setup-release-devkit
-      - run: uv run --project "$RUNNER_TEMP/release-devkit" --locked --no-dev release --channel pr
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+    uses: outernet-foundation/github-actions-toolkit/.github/workflows/update-pr-draft-release.yml@66df38b08b8209b587de1c140b720d835ed8a3c3
