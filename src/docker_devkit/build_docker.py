@@ -86,7 +86,6 @@ def run_build(
     lock_only: bool = False,
     gpu_only: bool = False,
     no_cache: bool = False,
-    env_overlay: dict[str, str] | None = None,
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
@@ -131,8 +130,6 @@ def run_build(
 
     # Update environment with external dependency image digests
     os.environ.update(lock_data)
-    if env_overlay:
-        os.environ.update(env_overlay)
 
     # Build command arguments
     command_arguments: list[str] = []

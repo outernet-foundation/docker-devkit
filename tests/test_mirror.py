@@ -1,5 +1,4 @@
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -14,13 +13,6 @@ from docker_devkit.mirror import MirrorConfig
 MIRROR_PREFIX = "ghcr.io/outernet-foundation/mirror"
 FAKE_DIGEST = "sha256:" + "a" * 64
 
-MIRROR_REFERENCES = [
-    f"{MIRROR_PREFIX}/docker.io/library/python:3.13-slim@{FAKE_DIGEST}",
-    f"{MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15-python3.13-trixie-slim",
-    f"{MIRROR_PREFIX}/quay.io/keycloak/keycloak:26.3.5@{FAKE_DIGEST}",
-    f"{MIRROR_PREFIX}/docker.io/livekit/livekit-server:v1.12.0@{FAKE_DIGEST}",
-]
-
 MANIFEST = (
     "x-base-images:\n"
     "  UV_IMAGE: ghcr.io/astral-sh/uv:0.12.15\n"
@@ -34,9 +26,8 @@ MANIFEST = (
 )
 
 LOCKED_ERROR = (
-    f"Image {MIRROR_PREFIX}/docker.io/library/alpine:3.20 (digest {FAKE_DIGEST}) is not mirrored yet. "
-    "If this is a new upstream dependency that has not been through CI, pass --allow-upstream-fallback "
-    "to pull the same digest from upstream for this run."
+    f"Image {MIRROR_PREFIX}/docker.io/library/alpine:3.20 (digest {FAKE_DIGEST}) is not mirrored yet; "
+    "the CI mirror job populates it when the declaring change runs"
 )
 
 runner = CliRunner()
@@ -107,10 +98,6 @@ def _bash_check_false(command: str) -> bool:
     return False
 
 
-def _must_not_be_probed(reference: str) -> bool:
-    raise AssertionError(f"unexpected existence probe: {reference}")
-
-
 def _no_service_shas(root: Path, bake: BakeDocument) -> dict[str, str]:
     return {}
 
@@ -121,29 +108,6 @@ def _no_gc_limits(min_gb: int = 60) -> None:
 
 def _fixed_digest(reference: str) -> str:
     return FAKE_DIGEST
-
-
-class TestInversion:
-    @pytest.mark.parametrize("reference", MIRROR_REFERENCES)
-    def test_round_trips_through_the_prefix(self, reference: str):
-        assert mirror.is_mirrored(reference, MIRROR_PREFIX)
-        assert f"{MIRROR_PREFIX}/{mirror.upstream_ref(reference, MIRROR_PREFIX)}" == reference
-
-    @pytest.mark.parametrize("reference", MIRROR_REFERENCES)
-    def test_preserves_tag_and_digest_tail(self, reference: str):
-        assert mirror.upstream_ref(reference, MIRROR_PREFIX).rpartition("/")[2] == reference.rpartition("/")[2]
-
-    def test_dockerio_path_maps_to_fully_qualified_upstream(self):
-        reference = f"{MIRROR_PREFIX}/docker.io/livekit/livekit-server:v1.12.0@{FAKE_DIGEST}"
-        assert (
-            mirror.upstream_ref(reference, MIRROR_PREFIX) == f"docker.io/livekit/livekit-server:v1.12.0@{FAKE_DIGEST}"
-        )
-
-    def test_prefix_boundary_requires_slash(self):
-        assert not mirror.is_mirrored(f"{MIRROR_PREFIX}-evil/docker.io/library/alpine:3.20", MIRROR_PREFIX)
-
-    def test_publish_entries_are_not_mirrored(self):
-        assert not mirror.is_mirrored("ghcr.io/outernet-foundation/placeframe/api:1.2.3", MIRROR_PREFIX)
 
 
 class TestLoadMirrorConfig:
@@ -198,59 +162,33 @@ class TestReferenceExists:
         assert not mirror.reference_exists("docker.io/library/alpine:3.20")
 
 
-class TestUpstreamFallback:
+class TestEnforceMirrored:
     def test_fails_closed_with_the_locked_message(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mirror, "reference_exists", _bash_check_false)
         lock_data = {"ALPINE_IMAGE": f"{MIRROR_PREFIX}/docker.io/library/alpine:3.20@{FAKE_DIGEST}"}
 
         with pytest.raises(RuntimeError) as excinfo:
-            mirror.upstream_fallback(lock_data, MIRROR_PREFIX, allow_upstream_fallback=False)
+            mirror.enforce_mirrored(lock_data)
 
         assert str(excinfo.value) == LOCKED_ERROR
 
-    def test_flag_substitutes_exactly_the_missing_entries(self, monkeypatch: pytest.MonkeyPatch):
-        present = f"{MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15"
-        absent = f"{MIRROR_PREFIX}/docker.io/library/alpine:3.20@{FAKE_DIGEST}"
-        existence = SelectiveExistence(present)
-        monkeypatch.setattr(mirror, "reference_exists", existence.exists)
-        lock_data = {
-            "UV_IMAGE": present,
-            "ALPINE_IMAGE": absent,
-            "API_IMAGE": "ghcr.io/outernet-foundation/placeframe/api:1.2.3",
-        }
-
-        substitutions = mirror.upstream_fallback(lock_data, MIRROR_PREFIX, allow_upstream_fallback=True)
-
-        assert substitutions == {"ALPINE_IMAGE": f"docker.io/library/alpine:3.20@{FAKE_DIGEST}"}
-        assert existence.probed == [present, absent]
-
-    def test_returns_empty_when_everything_is_mirrored(self, monkeypatch: pytest.MonkeyPatch):
+    def test_passes_when_every_entry_exists(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mirror, "reference_exists", _always_true)
         lock_data = {"ALPINE_IMAGE": f"{MIRROR_PREFIX}/docker.io/library/alpine:3.20@{FAKE_DIGEST}"}
 
-        assert mirror.upstream_fallback(lock_data, MIRROR_PREFIX, allow_upstream_fallback=False) == {}
+        mirror.enforce_mirrored(lock_data)
 
-    def test_non_mirror_entries_are_never_probed(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(mirror, "reference_exists", _must_not_be_probed)
-        lock_data = {"API_IMAGE": "ghcr.io/outernet-foundation/placeframe/api:1.2.3"}
+    def test_reports_the_first_missing_entry_deterministically(self, monkeypatch: pytest.MonkeyPatch):
+        present = f"{MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15@{FAKE_DIGEST}"
+        absent = f"{MIRROR_PREFIX}/docker.io/library/alpine:3.20@{FAKE_DIGEST}"
+        existence = SelectiveExistence(present)
+        monkeypatch.setattr(mirror, "reference_exists", existence.exists)
+        lock_data = {"UV_IMAGE": present, "ALPINE_IMAGE": absent}
 
-        assert mirror.upstream_fallback(lock_data, MIRROR_PREFIX, allow_upstream_fallback=True) == {}
+        with pytest.raises(RuntimeError, match="alpine"):
+            mirror.enforce_mirrored(lock_data)
 
-
-class TestWriteFallbackOverlay:
-    def test_writes_sorted_entries_under_a_pid_named_tempfile(self):
-        substitutions = {
-            "UV_IMAGE": "ghcr.io/astral-sh/uv:0.12.15",
-            "ALPINE_IMAGE": f"docker.io/library/alpine:3.20@{FAKE_DIGEST}",
-        }
-
-        overlay = mirror.write_fallback_overlay(substitutions)
-
-        assert overlay.parent == Path(tempfile.gettempdir())
-        assert overlay.name == f"docker-devkit-upstream-fallback-{os.getpid()}.env"
-        assert overlay.read_text(encoding="utf-8") == (
-            f"ALPINE_IMAGE=docker.io/library/alpine:3.20@{FAKE_DIGEST}\nUV_IMAGE=ghcr.io/astral-sh/uv:0.12.15\n"
-        )
+        assert existence.probed == [absent]
 
 
 class TestMirrorVerb:
@@ -348,7 +286,7 @@ class TestUpstreamAwareLockResolution:
         assert recorder.inspected == []
 
 
-class TestBakeConsumesEnvOverlay:
+class TestBakeSeesLockValues:
     def _write_tree(self, tmp_path: Path) -> None:
         _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
         (tmp_path / "workloads").mkdir()
@@ -362,17 +300,7 @@ class TestBakeConsumesEnvOverlay:
         monkeypatch.setattr(build_docker, "compute_service_shas", _no_service_shas)
         return probe
 
-    def test_overlay_wins_over_lock_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._write_tree(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        probe = self._fake_bake(monkeypatch)
-        upstream = f"ghcr.io/astral-sh/uv:0.12.15@{FAKE_DIGEST}"
-
-        build_docker.run_build(gpu="none", env_overlay={"UV_IMAGE": upstream})
-
-        assert probe.uv_image == upstream
-
-    def test_without_overlay_bake_sees_mirror_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_bake_sees_mirror_prefixed_lock_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         self._write_tree(tmp_path)
         monkeypatch.chdir(tmp_path)
         probe = self._fake_bake(monkeypatch)
