@@ -10,7 +10,7 @@ Config follows the org law (home: github-actions-toolkit's `AGENTS.md`): this is
 
 ## Release flow
 
-github-actions-toolkit's `AGENTS.md` owns the three-workflow contract; this repo follows it unchanged. Repo-specific facts: github-actions-toolkit is never a project dependency (docker-devkit sits inside its own dependency graph; a project-level edge is a resolver cycle), and from 1.0 on API-breaking changes ship with a manually bumped `major_minor` (pre-1.0, breaking changes ride the patch flow; patch-auto assumes additive changes).
+github-actions-toolkit's `AGENTS.md` owns the consumer workflow contract; this repo follows it unchanged. Repo-specific facts: github-actions-toolkit is never a project dependency (docker-devkit sits inside its own dependency graph; a project-level edge is a resolver cycle), and from 1.0 on API-breaking changes ship with a manually bumped `major_minor` (pre-1.0, breaking changes ride the patch flow; patch-auto assumes additive changes).
 
 ## Mirror consumption
 
