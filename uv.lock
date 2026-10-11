@@ -42,17 +42,17 @@ wheels = [
 ]
 
 [[package]]
-name = "ci-devkit"
-version = "0.2.0"
+name = "build-artifact-registry"
+version = "0.2.0.dev38101394871"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/c6/94c2a4a406b593ca3a1140151c0cb2c1367b30bf295f32a4bf9c92c100ac/ci_devkit-0.2.0.tar.gz", hash = "sha256:a16e0a91771a5b50205646577e8d56198c7c3262a063d7ebcf9a82fc26a2e3e0", size = 53288, upload-time = "2026-10-05T15:02:35.926Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/35/7bd270fb56bbbcee40ee2f3834b07e912fb69ff62f84560f7a2e08a3759a/build_artifact_registry-0.2.0.dev38101394871.tar.gz", hash = "sha256:d19575c8315f808cbd5d6e6011dbe2eb03a2b1bc25865482ddbf14acccb1dace", size = 36173, upload-time = "2026-10-11T01:21:07.61Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/d7/f7b91b7e62ed5cd7864f4ddbf84851ad5a31938342cb00e28bf15a7064c2/ci_devkit-0.2.0-py3-none-any.whl", hash = "sha256:d86403effbe36563b0a471d860e5e1e46ae7793d7d203a2dcc5561e91d1163f6", size = 28022, upload-time = "2026-10-05T15:02:34.654Z" },
+    { url = "https://files.pythonhosted.org/packages/41/e4/4cb0cc61d42f3822aec3f66b27490e3dfa44ecc26109093236c868528121/build_artifact_registry-0.2.0.dev38101394871-py3-none-any.whl", hash = "sha256:b124930a6b565ce0861d3bc6f680cbca92bf81334caef077b5b00666cee9257f", size = 10745, upload-time = "2026-10-11T01:21:06.485Z" },
 ]
 
 [[package]]
@@ -70,7 +70,7 @@ version = "0.0.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "bashrun" },
-    { name = "ci-devkit" },
+    { name = "build-artifact-registry" },
     { name = "packaging" },
     { name = "pathspec" },
     { name = "pydantic" },
@@ -93,7 +93,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bashrun", specifier = ">=0.1.0" },
-    { name = "ci-devkit", specifier = ">=0.1.15" },
+    { name = "build-artifact-registry", specifier = ">=0.2.0.dev0" },
     { name = "packaging", specifier = ">=24.1" },
     { name = "pathspec", specifier = ">=1.0.4" },
     { name = "pydantic", specifier = ">=2.11.7" },
@@ -107,7 +107,7 @@ requires-dist = [
 dev = [
     { name = "basedpyright", specifier = ">=1.39.10" },
     { name = "pytest", specifier = ">=8.0.0" },
-    { name = "python-devkit", specifier = ">=0.1.0" },
+    { name = "python-devkit", specifier = ">=0.3.0.dev0" },
     { name = "ruff", specifier = ">=0.14.11" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
     { name = "types-strictyaml", specifier = ">=1.7.3.3" },
@@ -310,17 +310,16 @@ wheels = [
 
 [[package]]
 name = "python-devkit"
-version = "0.1.15"
+version = "0.3.0.dev38096025533"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bashrun" },
-    { name = "ci-devkit" },
     { name = "pydantic" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/82/53/c3b37f69c35475b09cdf1c18deb193238d7ab5143ee6bc97e5c22c48fe87/python_devkit-0.1.15.tar.gz", hash = "sha256:ac1ef0f2a4622e9c97763f4e353005c41164e2d6d4b130cdb709e811947f253d", size = 34651, upload-time = "2026-09-30T04:12:18.88Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/07/160d8d87f184c1f9a32e2dd64a413695d10dad275d1684f89728d28c543c/python_devkit-0.3.0.dev38096025533.tar.gz", hash = "sha256:94b6f3d63b9192ede7d4bff2a3fabcc714a202807e2a7468c0047920837bb657", size = 33112, upload-time = "2026-10-10T23:47:13.476Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/81/da4f76cbfccb5a4d5a58a9f51d3e2b7d40f6dc9edd931d7891b2789adeae/python_devkit-0.1.15-py3-none-any.whl", hash = "sha256:0c13684cc780e3ba9b3e25feed61065b355e8fc7436bee043e7c6adf71fa40e7", size = 14537, upload-time = "2026-09-30T04:12:17.918Z" },
+    { url = "https://files.pythonhosted.org/packages/12/66/c87d7ab58ba1ded58dfb21fe0c9783231d7a67514fd335239bd95df58414/python_devkit-0.3.0.dev38096025533-py3-none-any.whl", hash = "sha256:605aeabb81770f6393e771518639512fd6a7c39b5a22554dfe747fd9de3a0205", size = 14633, upload-time = "2026-10-10T23:47:12.49Z" },
 ]
 
 [[package]]

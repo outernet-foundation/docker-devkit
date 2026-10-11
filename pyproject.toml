@@ -5,7 +5,7 @@ description = "Docker-stack lifecycle commands (up/down/build) driven by a pypro
 requires-python = ">=3.13"
 dependencies = [
     "bashrun>=0.1.0",
-    "ci-devkit>=0.1.15",
+    "build-artifact-registry>=0.2.0.dev0",
     "packaging>=24.1",
     "pathspec>=1.0.4",
     "pydantic>=2.11.7",
@@ -20,7 +20,7 @@ dev = [
     "basedpyright>=1.39.10",
     "ruff>=0.14.11",
     "pytest>=8.0.0",
-    "python-devkit>=0.1.0",
+    "python-devkit>=0.3.0.dev0",
     "types-pyyaml>=6.0.12.20260906",
     "types-strictyaml>=1.7.3.3",
 ]
@@ -39,7 +39,6 @@ docker-build-matrix = "docker_devkit.matrix:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/docker_devkit"]
-include = ["src/docker_devkit/py.typed"]
 
 [tool.uv.sources]
 

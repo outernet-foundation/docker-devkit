@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -7,12 +8,12 @@ import re
 from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, TypedDict
 
 import typer
 from bashrun.bash import bash, bash_output
-from ci_devkit.builds import push_build
-from ci_devkit.setup_oras import install_oras
+from build_artifact_registry.builds import push_build
+from build_artifact_registry.setup_oras import install_oras
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, digest_pinned, parse_bake
 from pydantic_settings import BaseSettings
@@ -32,8 +33,6 @@ settings = Settings.model_validate({})
 
 METADATA_PATH = Path("metadata.json")
 
-Mode = Literal["local", "ci"]
-
 DIGEST_PROJECT = "images-digests"
 DIGEST_PLATFORM = "all"
 DIGEST_FILE_NAME = "images-digests.json"
@@ -50,41 +49,42 @@ app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 @app.command()
 def build(
-    upgrade: bool = typer.Option(False, "--upgrade", "-u", help="Re-resolve and rewrite base digests."),
-    lock_only: bool = typer.Option(False, "--lock-only", help="Update lock file without building images."),
-    mode: Annotated[
-        Mode, typer.Option("--mode", help="local: --load images; ci: --push images + registry caches.")
-    ] = "local",
-    gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
-    gpu_only: bool = typer.Option(
-        False, "--gpu-only", help="Build only the services suffixed for this gpu (requires a concrete --gpu)."
-    ),
-    no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
+    push: Annotated[
+        bool, typer.Option("--push", help="Push images (+ registry caches) and shelve the digest manifest.")
+    ] = False,
     targets_opt: Annotated[
         list[str] | None,
         typer.Option("--targets", "-t", help="Build only these services (from the image manifest)."),
     ] = None,
+    gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
+    upgrade: bool = typer.Option(False, "--upgrade", "-u", help="Re-resolve and rewrite base digests."),
+    lock_only: bool = typer.Option(False, "--lock-only", help="Update lock file without building images."),
+    gpu_only: bool = typer.Option(
+        False, "--gpu-only", help="Build only the services suffixed for this gpu (requires a concrete --gpu)."
+    ),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
 ) -> None:
+    targets = [service for value in targets_opt or [] for service in value.split()] or None
     run_build(
+        push=push,
+        targets_opt=targets,
+        gpu=gpu,
         upgrade=upgrade,
         lock_only=lock_only,
-        mode=mode,
-        gpu=gpu,
         gpu_only=gpu_only,
         no_cache=no_cache,
-        targets_opt=targets_opt,
     )
 
 
 def run_build(
     *,
+    push: bool = False,
+    targets_opt: list[str] | None = None,
+    gpu: Gpu = "auto",
     upgrade: bool = False,
     lock_only: bool = False,
-    mode: Mode = "local",
-    gpu: Gpu = "auto",
     gpu_only: bool = False,
     no_cache: bool = False,
-    targets_opt: list[str] | None = None,
     env_overlay: dict[str, str] | None = None,
 ) -> None:
     root = Path.cwd()
@@ -100,18 +100,17 @@ def run_build(
     # Load any existing lock
     lock_data = parse_env_file(lock_file) if lock_file.exists() else {}
 
-    # TOOD: Create separate commands for ci and local modes so typer can do this validation instead of us
-    if mode == "ci" and gpu == "auto":
-        raise typer.BadParameter("In CI mode, --gpu cannot be 'auto'; specify 'cuda' or 'rocm'.")
+    if push and gpu == "auto":
+        raise typer.BadParameter("With --push, --gpu cannot be 'auto'; specify 'cuda' or 'rocm'.")
 
-    if mode == "ci" and bake.registry_cache is None:
-        raise typer.BadParameter("In CI mode, the bake file must declare x-registry-cache.")
+    if push and bake.registry_cache is None:
+        raise typer.BadParameter("With --push, the bake file must declare x-registry-cache.")
 
     if gpu_only and gpu not in GPU_TYPES:
         raise typer.BadParameter("--gpu-only requires a concrete gpu (cuda or rocm), not 'auto' or 'none'.")
 
     # For local builds, ensure Docker GC limits are high enough that GPU builds don't cause cache evictions
-    if mode == "local" and not lock_only and not targets_opt:
+    if not push and not lock_only and not targets_opt:
         _check_gc_limits(min_gb=60)
 
     # Resolve gpu
@@ -163,8 +162,8 @@ def run_build(
     else:
         targets = compute_default_targets(bake, gpu, gpu_only)
 
-    # Configure registry caches in CI mode
-    if mode == "ci":
+    # Configure registry caches for push builds
+    if push:
         for target in targets:
             target_cache = f"{bake.registry_cache}:{target}"
             command_arguments.append(
@@ -174,9 +173,9 @@ def run_build(
 
     # `docker buildx --load` only writes a single arch to the host image store,
     # so bake targets declared multi-platform get overridden to host arch in
-    # local builds. CI uses `--push` and produces the full manifest list.
+    # local builds. --push produces the full manifest list.
     # Override key is `platform` (singular) even though the bake field is plural.
-    if mode == "local":
+    if not push:
         machine = platform.machine().lower()
         if machine in ("x86_64", "amd64"):
             host_platform = "linux/amd64"
@@ -188,8 +187,8 @@ def run_build(
             if len(bake.services[target].build.platforms) > 1:
                 command_arguments.append(f"--set {target}.platform={host_platform}")
 
-    # Load or push images based on mode
-    command_arguments.append("--load" if mode == "local" else "--push")
+    # Load or push images
+    command_arguments.append("--push" if push else "--load")
 
     # Handle no-cache option
     if no_cache:
@@ -217,16 +216,23 @@ def run_build(
     if not set(targets) <= baked_images.keys():
         raise RuntimeError("Bake output does not cover the requested targets")
 
-    # Push the digest manifest to the repo's builds shelf (address and SHA derived, never flagged)
-    if mode == "ci":
-        github_repository = os.environ.get("GITHUB_REPOSITORY", "")
-        if not github_repository:
-            raise SystemExit("GITHUB_REPOSITORY not set — ci mode reads the GitHub runner environment")
-        shelf = f"ghcr.io/{github_repository}/builds"
+    # Push the digest manifest to the repo's builds shelf (registry supplied explicitly, SHA from the checkout)
+    if push:
+        registry = os.environ.get("REGISTRY", "")
+        if not registry:
+            raise SystemExit("REGISTRY not set — --push shelves the digest manifest under it")
+        shelf = f"{registry}/builds"
         sha = bash_output("git rev-parse HEAD").strip()
         push_image_digests(shelf, sha, baked_images, targets)
 
 
+def leg_key(targets: list[str]) -> str:
+    return hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
+
+
+# Each matrix leg pushes its own manifest shard under sha-{sha}-{key}: legs run in
+# parallel, so a shared tag would be last-writer-wins. The pull side enumerates a
+# SHA's shards and merges — consumption happens only after every leg finished.
 def push_image_digests(
     shelf: str,
     sha: str,
@@ -242,7 +248,7 @@ def push_image_digests(
             shelf,
             DIGEST_PROJECT,
             DIGEST_PLATFORM,
-            f"sha-{sha}",
+            f"sha-{sha}-{leg_key(targets)}",
             Path(staging),
             [DIGEST_FILE_NAME],
         )
