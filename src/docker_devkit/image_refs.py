@@ -12,6 +12,7 @@ from bashrun.bash import bash_output
 from pydantic import RootModel
 
 from .documents import BakeDocument, parse_bake
+from .lifecycle import MANIFEST_PATH
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
@@ -60,15 +61,11 @@ def unpinned_references(root: Path) -> list[str]:
     ]
 
 
-def declared_references(
-    root: Path, bake_globs: tuple[str, ...] = ("workloads/images.yml", "compose*.bake.yml")
-) -> list[ImageReference]:
-    return [
-        reference
-        for bake_glob in bake_globs
-        for path in sorted(root.glob(bake_glob))
-        for reference in bake_base_image_refs(parse_bake(path))
-    ]
+def declared_references(root: Path) -> list[ImageReference]:
+    manifest = root / MANIFEST_PATH
+    if not manifest.exists():
+        return []
+    return bake_base_image_refs(parse_bake(manifest))
 
 
 def stray_references(

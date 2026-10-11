@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import os
 import shlex
-import tempfile
 from pathlib import Path
 
 import typer
 from bashrun.bash import bash, bash_check
 
 from .config import MirrorConfig, load_config
-from .image_refs import ImageReference, declared_references
+from .image_refs import declared_references
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
@@ -23,7 +22,7 @@ def mirror() -> None:
     if config is None:
         raise RuntimeError("a mirror section with 'prefix' is required in docker-devkit.yaml to mirror")
 
-    targets = mirror_targets(root, config.prefix)
+    targets = sorted(declared_references(root), key=lambda occurrence: occurrence.reference)
     print(f"Install crane {CRANE_VERSION}")
     sudo = "sudo " if os.geteuid() != 0 else ""
     archive = "go-containerregistry_Linux_x86_64.tar.gz"
@@ -31,9 +30,9 @@ def mirror() -> None:
     bash(f"{sudo}tar -xzf {archive} -C /usr/local/bin crane")
     Path(archive).unlink()
     for target in targets:
-        upstream = upstream_ref(target.reference, config.prefix)
-        print(f"Mirror {upstream} -> {target.reference}")
-        bash(f"crane copy {upstream} {target.reference}")
+        destination = mirrored_ref(target.reference, config.prefix)
+        print(f"Mirror {target.reference} -> {destination}")
+        bash(f"crane copy {target.reference} {destination}")
     print(f"Mirrored images: {len(targets)}")
 
 
@@ -42,49 +41,27 @@ def load_mirror_config(root: Path) -> MirrorConfig | None:
     return config.mirror if config is not None else None
 
 
-def is_mirrored(reference: str, prefix: str) -> bool:
-    return reference.startswith(f"{prefix}/")
-
-
-def upstream_ref(reference: str, prefix: str) -> str:
-    return reference[len(prefix) + 1 :]
+def mirrored_ref(reference: str, prefix: str) -> str:
+    if reference.startswith(f"{prefix}/"):
+        raise RuntimeError(
+            f"x-base-images values are upstream-native; {reference} already carries the mirror prefix {prefix}"
+        )
+    return f"{prefix}/{reference}"
 
 
 def reference_exists(reference: str) -> bool:
     return bash_check(f"docker buildx imagetools inspect {shlex.quote(reference)}")
 
 
-def mirror_targets(root: Path, prefix: str) -> list[ImageReference]:
-    return sorted(
-        (occurrence for occurrence in declared_references(root) if is_mirrored(occurrence.reference, prefix)),
-        key=lambda occurrence: occurrence.reference,
-    )
-
-
-def upstream_fallback(lock_data: dict[str, str], prefix: str, *, allow_upstream_fallback: bool) -> dict[str, str]:
-    missing = {
-        name: value for name, value in lock_data.items() if is_mirrored(value, prefix) and not reference_exists(value)
-    }
-    if not missing:
-        return {}
-    if not allow_upstream_fallback:
-        value = next(iter(missing.values()))
+def enforce_mirrored(lock_data: dict[str, str]) -> None:
+    for value in sorted(lock_data.values()):
+        if reference_exists(value):
+            continue
         reference, _, digest = value.rpartition("@")
         raise RuntimeError(
-            f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet. "
-            "If this is a new upstream dependency that has not been through CI, pass --allow-upstream-fallback "
-            "to pull the same digest from upstream for this run."
+            f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
+            "the CI mirror job populates it when the declaring change runs"
         )
-    return {name: upstream_ref(value, prefix) for name, value in missing.items()}
-
-
-def write_fallback_overlay(substitutions: dict[str, str]) -> Path:
-    overlay = Path(tempfile.gettempdir()) / f"docker-devkit-upstream-fallback-{os.getpid()}.env"
-    overlay.write_text(
-        "\n".join(f"{name}={value}" for name, value in sorted(substitutions.items())) + "\n",
-        encoding="utf-8",
-    )
-    return overlay
 
 
 def main() -> None:
