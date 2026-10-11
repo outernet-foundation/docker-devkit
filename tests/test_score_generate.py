@@ -35,20 +35,20 @@ def make_config(**overrides: str | list[str]) -> ScoreConfig:
 
 def test_expand_substitutes_uppercase_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_SHA", "tree-abc")
-    expanded = expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("compose.bake.yml"))
+    expanded = expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("workloads/images.yml"))
     assert expanded == "image: registry/app:tree-abc"
 
 
 def test_expand_leaves_score_resource_references(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_SHA", "tree-abc")
     text = "host: ${resources.db.host}"
-    assert expand_placeholders(text, "api.yaml", Path("compose.bake.yml")) == text
+    assert expand_placeholders(text, "api.yaml", Path("workloads/images.yml")) == text
 
 
 def test_expand_exits_on_missing_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("API_SHA", raising=False)
     with pytest.raises(SystemExit, match="API_SHA"):
-        expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("compose.bake.yml"))
+        expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("workloads/images.yml"))
 
 
 def test_sort_documents_orders_by_kind_then_namespace(tmp_path: Path) -> None:

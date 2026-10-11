@@ -89,7 +89,7 @@ def run_build(
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
-    lock_file = resolve_lock(root, manifest)
+    lock_file = resolve_lock(root)
     mirror_config = load_mirror_config(root)
 
     bake = parse_bake(manifest)

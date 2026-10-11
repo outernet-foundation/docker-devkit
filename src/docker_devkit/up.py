@@ -54,7 +54,7 @@ def up(
     config = load_lifecycle_config(root)
     enforce_bake_declaration(root, config)
     manifest = resolve_manifest(root)
-    lock_file = resolve_lock(root, manifest)
+    lock_file = resolve_lock(root)
 
     if dev and (config is None or config.dev_file is None):
         raise RuntimeError("--dev requires a dev_file in the lifecycle section of docker-devkit.yaml")

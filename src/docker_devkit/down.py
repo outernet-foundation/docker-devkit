@@ -31,7 +31,7 @@ def down(
     config = load_lifecycle_config(root)
     enforce_bake_declaration(root, config)
     manifest = resolve_manifest(root)
-    lock_file = resolve_lock(root, manifest)
+    lock_file = resolve_lock(root)
 
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found")

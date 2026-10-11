@@ -8,11 +8,9 @@ from .detect_gpu import Gpu
 DEFAULT_COMPOSE_FILE = Path("compose.yml")
 GPU_PLACEHOLDER = "{gpu}"
 
-# The image manifest and its lock are a named pair living in the same directory. The
-# legacy names keep resolving so a repo can upgrade the devkit before moving its files.
-MANIFEST_CANDIDATES = (Path("workloads/images.yml"), Path("compose.bake.yml"))
-MANIFEST_LOCK_PAIR = {"images.yml": "images.lock", "compose.bake.yml": ".env.lock"}
-LOCK_CANDIDATES = (Path("workloads/images.lock"), Path(".env.lock"))
+# The image manifest and its lock are a named pair living in the same directory.
+MANIFEST_PATH = Path("workloads/images.yml")
+LOCK_PATH = Path("workloads/images.lock")
 
 
 def load_lifecycle_config(root: Path) -> LifecycleConfig | None:
@@ -21,27 +19,25 @@ def load_lifecycle_config(root: Path) -> LifecycleConfig | None:
 
 
 def resolve_manifest(root: Path) -> Path | None:
-    return next((root / candidate for candidate in MANIFEST_CANDIDATES if (root / candidate).exists()), None)
+    manifest = root / MANIFEST_PATH
+    return manifest if manifest.exists() else None
 
 
 def require_manifest(root: Path) -> Path:
     manifest = resolve_manifest(root)
     if manifest is None:
-        raise RuntimeError(f"No image manifest found; {MANIFEST_CANDIDATES[0]} is the canonical name")
+        raise RuntimeError(f"No image manifest at {MANIFEST_PATH}")
     return manifest
 
 
-def resolve_lock(root: Path, manifest: Path | None) -> Path:
-    if manifest is not None:
-        return manifest.parent / MANIFEST_LOCK_PAIR[manifest.name]
-    existing = next((root / candidate for candidate in LOCK_CANDIDATES if (root / candidate).exists()), None)
-    return existing if existing is not None else root / LOCK_CANDIDATES[0]
+def resolve_lock(root: Path) -> Path:
+    return root / LOCK_PATH
 
 
 def enforce_bake_declaration(root: Path, config: LifecycleConfig | None) -> None:
-    if config is None and any((root / candidate).exists() for candidate in MANIFEST_CANDIDATES):
+    if config is None and (root / MANIFEST_PATH).exists():
         raise RuntimeError(
-            "image manifest present without a lifecycle section in docker-devkit.yaml; declare the section or rename the file"
+            "image manifest present without a lifecycle section in docker-devkit.yaml; declare the section"
         )
 
 
