@@ -14,6 +14,7 @@ import typer
 from bashrun.bash import bash, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
+from .config import MirrorConfig
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, digest_pinned, parse_bake
 from pydantic_settings import BaseSettings
@@ -21,7 +22,7 @@ from .context_sha import compute_service_shas
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
 from .lifecycle import require_manifest, resolve_lock
-from .mirror import is_mirrored, load_mirror_config, upstream_ref
+from .mirror import load_mirror_config, mirrored_ref
 from .modes import parse_env_file
 
 
@@ -117,24 +118,7 @@ def run_build(
     if gpu == "auto" and not lock_only:
         gpu = detect_gpu()
 
-    # One lock entry per declared third-party image: NAME=path:tag@sha256:…
-    # Mirror-prefixed declarations resolve their digest against upstream (crane copies
-    # are byte-identical, so the digest is valid under both names) and record it under
-    # the mirror name — declaring and re-locking works before CI has mirrored anything.
-    for occurrence in bake_base_image_refs(bake):
-        if digest_pinned(occurrence.reference):
-            lock_data[occurrence.name] = occurrence.reference
-            continue
-        if (
-            not upgrade
-            and occurrence.name in lock_data
-            and lock_data[occurrence.name].startswith(occurrence.reference + "@")
-        ):
-            continue
-        inspect_target = occurrence.reference
-        if mirror_config is not None and is_mirrored(occurrence.reference, mirror_config.prefix):
-            inspect_target = upstream_ref(occurrence.reference, mirror_config.prefix)
-        lock_data[occurrence.name] = f"{occurrence.reference}@{resolve_remote_digest(inspect_target)}"
+    update_lock_entries(bake, mirror_config, lock_data, upgrade=upgrade)
 
     # Update main lock file
     lock_file.write_text(
@@ -224,6 +208,31 @@ def run_build(
         shelf = f"{registry}/builds"
         sha = bash_output("git rev-parse HEAD").strip()
         push_image_digests(shelf, sha, baked_images, targets)
+
+
+# One lock entry per declared third-party image: NAME={prefix}/{ref}@sha256:… — the
+# mirror-prefixed form is derived from the mirror prefix, the digest resolves against
+# the upstream reference (crane copies are byte-identical, so the digest is valid
+# under both names) and records under the mirror name.
+def update_lock_entries(
+    bake: BakeDocument,
+    mirror_config: MirrorConfig | None,
+    lock_data: dict[str, str],
+    *,
+    upgrade: bool,
+) -> None:
+    if not bake.base_images:
+        return
+    if mirror_config is None:
+        raise RuntimeError("x-base-images declared without a mirror section in docker-devkit.yaml")
+    for occurrence in bake_base_image_refs(bake):
+        lock_base = mirrored_ref(occurrence.reference, mirror_config.prefix)
+        if digest_pinned(occurrence.reference):
+            lock_data[occurrence.name] = lock_base
+            continue
+        if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
+            continue
+        lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
 
 
 def leg_key(targets: list[str]) -> str:
