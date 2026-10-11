@@ -85,8 +85,13 @@ def test_push_image_digests_pushes_manifest_to_images_digests_all(monkeypatch: p
     assert registry == "ghcr.io/owner/builds"
     assert project == "images-digests"
     assert platform == "all"
-    assert tag == f"sha-{BUILD_SHA}"
+    assert tag == f"sha-{BUILD_SHA}-{build_docker.leg_key(['zed-capture'])}"
     assert paths == [DIGEST_FILE_NAME]
     assert recorder.manifests == [
         {"zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "latest"]}}
     ]
+
+
+def test_leg_key_is_order_insensitive() -> None:
+    assert build_docker.leg_key(["zed-capture", "aoa-bridge"]) == build_docker.leg_key(["aoa-bridge", "zed-capture"])
+    assert build_docker.leg_key(["zed-capture"]) != build_docker.leg_key(["aoa-bridge"])

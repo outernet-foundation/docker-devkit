@@ -1,6 +1,6 @@
 packages:
   docker-devkit:
     path: .
-    major_minor: "0.2"
+    major_minor: "0.3"
     registry: pypi
     identity: docker-devkit
