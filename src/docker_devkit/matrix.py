@@ -18,30 +18,47 @@ PLAIN_VARIANT = "common"
 @app.command()
 def matrix_main() -> None:
     bake = parse_bake(require_manifest(Path.cwd()))
-    print(f"matrix={json.dumps({'include': compute_matrix_entries(bake)})}")
+    print(json.dumps(compute_matrix_entries(bake)))
 
 
-# One entry per variant: targets are the dependency-closure groups of that variant's
-# explicitly-buildable services, coalesced into a single leg — the shape a single
-# gpu-resolved build invocation would produce, with dependents grouped with the base
-# their additional_contexts `target:` references pull in.
+# One entry per variant and cohort cell: targets are the dependency-closure groups
+# of that cell's explicitly-buildable services, coalesced into a single leg — the
+# shape a single gpu-resolved build invocation would produce, with dependents
+# grouped with the base their additional_contexts `target:` references pull in.
+# The cross-compile cohort gets its own legs: per-arch builds are the QEMU-slow
+# ones, so they parallelize away from native builds instead of serializing them
+# into one invocation.
 def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
-    entries_by_variant: dict[str, list[str]] = {}
+    cohort = cross_compile_cohort(bake)
+    entries_by_cell: dict[tuple[str, bool], list[str]] = {}
     for group in dependency_groups(bake):
-        explicit = sorted(
-            service
-            for service in group
-            if bake.services[service].build.tags and service not in set(bake.cross_compile_targets)
-        )
+        explicit = sorted(service for service in group if bake.services[service].build.tags)
         if not explicit:
             continue
         variant = group_variant(bake, explicit)
-        entries_by_variant.setdefault(variant, []).extend(explicit)
+        memberships = {service in cohort for service in explicit}
+        if len(memberships) > 1:
+            raise RuntimeError(
+                f"dependency group spans cross-compile cohort membership ({', '.join(explicit)}) — "
+                "additional_contexts must stay within one cohort"
+            )
+        entries_by_cell.setdefault((variant, memberships.pop()), []).extend(explicit)
 
     return [
-        {"targets": " ".join(sorted(entries_by_variant[variant])), "variant": variant}
-        for variant in sorted(entries_by_variant)
+        {"targets": " ".join(sorted(targets)), "variant": variant}
+        for (variant, _), targets in sorted(entries_by_cell.items())
     ]
+
+
+# The cross-compile cohort: every service declaring `platforms:` (per-arch
+# treatment is a manifest fact, not an operator judgment) plus the hand-listed
+# x-cross-compile-targets members.
+def cross_compile_cohort(bake: BakeDocument) -> set[str]:
+    unknown = set(bake.cross_compile_targets) - set(bake.services)
+    if unknown:
+        raise RuntimeError(f"x-cross-compile-targets names unknown services: {', '.join(sorted(unknown))}")
+    pinned = {service for service, config in bake.services.items() if config.build.platforms}
+    return pinned | set(bake.cross_compile_targets)
 
 
 def dependency_groups(bake: BakeDocument) -> list[list[str]]:

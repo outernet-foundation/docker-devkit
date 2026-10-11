@@ -7,12 +7,20 @@ from docker_devkit.documents import BakeDocument
 from docker_devkit.matrix import compute_matrix_entries
 
 
-def service(dockerfile: str, *, tags: bool = True, contexts: dict[str, str] | None = None) -> dict[str, object]:
+def service(
+    dockerfile: str,
+    *,
+    tags: bool = True,
+    contexts: dict[str, str] | None = None,
+    platforms: list[str] | None = None,
+) -> dict[str, object]:
     build: dict[str, object] = {"dockerfile": dockerfile}
     if tags:
         build["tags"] = [f"registry/{dockerfile}:latest"]
     if contexts is not None:
         build["additional_contexts"] = contexts
+    if platforms is not None:
+        build["platforms"] = platforms
     return {"build": build}
 
 
@@ -65,16 +73,59 @@ def test_single_service_repo_emits_matrix_of_one() -> None:
     assert compute_matrix_entries(bake) == [{"targets": "livekit-token", "variant": "common"}]
 
 
-def test_cross_compile_targets_are_excluded() -> None:
+def test_cross_compile_targets_get_their_own_legs() -> None:
     bake = BakeDocument.model_validate({
         "services": {
             "api": service("docker/api/Dockerfile"),
+            "postgres": service("docker/postgres/Dockerfile"),
             "zed-capture": service("docker/zed-capture/Dockerfile"),
         },
         "x-cross-compile-targets": ["zed-capture"],
     })
 
-    assert compute_matrix_entries(bake) == [{"targets": "api", "variant": "common"}]
+    assert compute_matrix_entries(bake) == [
+        {"targets": "api postgres", "variant": "common"},
+        {"targets": "zed-capture", "variant": "common"},
+    ]
+
+
+def test_platform_pinned_services_join_the_cross_compile_cohort() -> None:
+    bake = BakeDocument.model_validate({
+        "services": {
+            "api": service("docker/api/Dockerfile"),
+            "zed-capture": service("docker/zed-capture/Dockerfile", platforms=["linux/arm64"]),
+            "aoa-bridge": service("docker/aoa-bridge/Dockerfile", platforms=["linux/arm64"]),
+        }
+    })
+
+    assert compute_matrix_entries(bake) == [
+        {"targets": "api", "variant": "common"},
+        {"targets": "aoa-bridge zed-capture", "variant": "common"},
+    ]
+
+
+def test_unknown_cross_compile_target_fails_loudly() -> None:
+    bake = BakeDocument.model_validate({
+        "services": {"api": service("docker/api/Dockerfile")},
+        "x-cross-compile-targets": ["missing"],
+    })
+
+    with pytest.raises(RuntimeError, match="unknown services"):
+        compute_matrix_entries(bake)
+
+
+def test_group_spanning_cohort_membership_fails_loudly() -> None:
+    bake = BakeDocument.model_validate({
+        "services": {
+            "api": service("docker/api/Dockerfile"),
+            "zed-capture": service(
+                "docker/zed-capture/Dockerfile", contexts={"api": "target:api"}, platforms=["linux/arm64"]
+            ),
+        }
+    })
+
+    with pytest.raises(RuntimeError, match="spans cross-compile cohort"):
+        compute_matrix_entries(bake)
 
 
 def test_non_target_additional_contexts_do_not_group() -> None:
@@ -111,7 +162,7 @@ def test_unknown_target_reference_fails_loudly() -> None:
         compute_matrix_entries(bake)
 
 
-def test_matrix_main_prints_github_output_line(
+def test_matrix_main_prints_bare_leg_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / "workloads").mkdir()
@@ -125,5 +176,5 @@ def test_matrix_main_prints_github_output_line(
 
     matrix_main()
 
-    payload = json.loads(capsys.readouterr().out.splitlines()[0][len("matrix=") :])
-    assert payload == {"include": [{"targets": "livekit-token", "variant": "common"}]}
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"targets": "livekit-token", "variant": "common"}]
