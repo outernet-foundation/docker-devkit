@@ -10,12 +10,12 @@ from .context_sha import compute_service_shas
 from .documents import parse_bake
 from .lifecycle import (
     enforce_bake_declaration,
+    enumerate_profiles,
     expand_compose_files,
     load_lifecycle_config,
     resolve_lock,
     resolve_manifest,
 )
-from .modes import resolve_auth_mode
 
 ENV_FILE = Path(".env")
 
@@ -44,8 +44,6 @@ def down(
     if gpu == "auto":
         gpu = detect_gpu()
 
-    resolve_auth_mode(ENV_FILE)
-
     if manifest is not None:
         os.environ.update(compute_service_shas(root, parse_bake(manifest)))
 
@@ -55,15 +53,11 @@ def down(
         raise RuntimeError("No compose files declared; a builds-only repo has no stack to tear down")
 
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
-    command = (
-        "docker compose "
-        f"{files_args} "
-        f"--project-directory {root} "
-        "--profile keycloak "  # Always include so any keycloak containers from a previous AUTH_MODE=keycloak run get torn down
-        "--env-file .env "
-        f"--env-file {lock_file} "
-        "down --remove-orphans"
-    )
+    # Every profile declared across the assembly, so teardown covers containers from a prior
+    # bring-up under a different COMPOSE_PROFILES selection
+    compose_prefix = f"docker compose {files_args} --project-directory {root} --env-file .env --env-file {lock_file}"
+    profile_flags = "".join(f"--profile {profile} " for profile in enumerate_profiles(compose_prefix))
+    command = f"{compose_prefix} {profile_flags}down --remove-orphans"
 
     if volumes:
         command += " -v"

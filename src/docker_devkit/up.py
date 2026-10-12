@@ -11,13 +11,14 @@ from .context_sha import compute_service_shas
 from .documents import parse_bake
 from .lifecycle import (
     enforce_bake_declaration,
+    enumerate_profiles,
     expand_compose_files,
     load_lifecycle_config,
     resolve_lock,
     resolve_manifest,
 )
 from .mirror import enforce_mirrored, load_mirror_config
-from .modes import parse_env_file, resolve_auth_mode
+from .modes import parse_env_file, resolve_compose_profiles
 
 ENV_FILE = Path(".env")
 
@@ -66,8 +67,6 @@ def up(
     if gpu == "auto":
         gpu = detect_gpu()
 
-    auth_mode = resolve_auth_mode(ENV_FILE)
-
     mirror_config = load_mirror_config(root)
     if mirror_config is not None:
         enforce_mirrored(parse_env_file(lock_file))
@@ -83,10 +82,20 @@ def up(
         raise RuntimeError("No compose files declared; a builds-only repo has no stack to bring up")
 
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
-    profile_flag = "--profile keycloak " if auth_mode == "keycloak" else ""
-    compose_args = f"{files_args} {profile_flag}--project-directory {root} --env-file .env --env-file {lock_file}"
-
-    up_command = f"docker compose {compose_args} up"
+    # compose ignores COMPOSE_PROFILES whenever a --profile flag is present, so the selection is
+    # resolved here and forwarded as explicit flags
+    compose_prefix = f"docker compose {files_args} --project-directory {root} --env-file .env --env-file {lock_file}"
+    profiles = resolve_compose_profiles(ENV_FILE)
+    if profiles:
+        defined = enumerate_profiles(compose_prefix)
+        unknown = [profile for profile in profiles if profile not in defined]
+        if unknown:
+            raise RuntimeError(
+                f"COMPOSE_PROFILES selects unknown profile(s) {unknown}; "
+                f"profiles defined by the compose files: {defined}"
+            )
+    profile_flags = "".join(f"--profile {profile} " for profile in profiles)
+    up_command = f"{compose_prefix} {profile_flags}up"
     if not build:
         # tree-<sha> tags are content-addressed and may not be pushed, so pull only what is missing locally
         up_command += " --pull missing"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from bashrun.bash import bash_output
+
 from .config import LifecycleConfig, load_config
 from .detect_gpu import Gpu
 
@@ -48,3 +50,8 @@ def expand_compose_files(config: LifecycleConfig | None, gpu: Gpu, *, include_de
     if include_dev and config.dev_file is not None:
         files.append(Path(config.dev_file))
     return files
+
+
+def enumerate_profiles(compose_prefix: str) -> list[str]:
+    output = bash_output(f"{compose_prefix} config --profiles")
+    return [line.strip() for line in output.splitlines() if line.strip()]
