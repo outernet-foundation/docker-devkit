@@ -11,8 +11,8 @@ DEFAULT_COMPOSE_FILE = Path("compose.yml")
 GPU_PLACEHOLDER = "{gpu}"
 
 # The image manifest and its lock are a named pair living in the same directory.
-MANIFEST_PATH = Path("workloads/images.yml")
-LOCK_PATH = Path("workloads/images.lock")
+MANIFEST_PATH = Path("images/images.yml")
+LOCK_PATH = Path("images/images.lock")
 
 
 def load_lifecycle_config(root: Path) -> LifecycleConfig | None:

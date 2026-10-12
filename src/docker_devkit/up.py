@@ -62,7 +62,7 @@ def up(
         )
 
     if build and manifest is None:
-        raise typer.BadParameter("--build requires an image manifest (workloads/images.yml)")
+        raise typer.BadParameter("--build requires an image manifest (images/images.yml)")
 
     if gpu == "auto":
         gpu = detect_gpu()

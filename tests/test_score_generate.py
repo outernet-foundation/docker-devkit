@@ -35,20 +35,20 @@ def make_config(**overrides: str | list[str]) -> ScoreConfig:
 
 def test_expand_substitutes_uppercase_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_SHA", "tree-abc")
-    expanded = expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("workloads/images.yml"))
+    expanded = expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("images/images.yml"))
     assert expanded == "image: registry/app:tree-abc"
 
 
 def test_expand_leaves_score_resource_references(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_SHA", "tree-abc")
     text = "host: ${resources.db.host}"
-    assert expand_placeholders(text, "api.yaml", Path("workloads/images.yml")) == text
+    assert expand_placeholders(text, "api.yaml", Path("images/images.yml")) == text
 
 
 def test_expand_exits_on_missing_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("API_SHA", raising=False)
     with pytest.raises(SystemExit, match="API_SHA"):
-        expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("workloads/images.yml"))
+        expand_placeholders("image: registry/app:${API_SHA}", "api.yaml", Path("images/images.yml"))
 
 
 def test_sort_documents_orders_by_kind_then_namespace(tmp_path: Path) -> None:
@@ -121,11 +121,11 @@ def test_load_score_config_reads_consumer_section(tmp_path: Path) -> None:
     assert config.workloads == ["api.yaml"]
     assert config.project_name == "placeframe"
     assert config.publishes == ["8000:api:8000"]
-    assert config.score_dir == Path("stack/score")
-    assert config.bake_file == Path("workloads/images.yml")
-    assert config.compose_output == Path("stack/generated/compose/compose.yaml")
-    assert config.k8s_output == Path("stack/generated/k8s/manifests.yaml")
-    assert config.k8s_state == Path("stack/generated/k8s/.score-k8s")
+    assert config.score_dir == Path("deployfiles/score")
+    assert config.bake_file == Path("images/images.yml")
+    assert config.compose_output == Path("deployfiles/generated/compose/compose.yaml")
+    assert config.k8s_output == Path("deployfiles/generated/k8s/manifests.yaml")
+    assert config.k8s_state == Path("deployfiles/generated/k8s/.score-k8s")
     assert config.score_k8s_version == "0.15.0"
     assert config.score_compose_version == "0.42.0"
 

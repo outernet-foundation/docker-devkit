@@ -68,7 +68,7 @@ def test_tagless_bases_ride_as_dependencies_not_targets() -> None:
 
 
 def test_single_service_repo_emits_matrix_of_one() -> None:
-    bake = BakeDocument.model_validate({"services": {"livekit-token": service("workloads/livekit-token/Dockerfile")}})
+    bake = BakeDocument.model_validate({"services": {"livekit-token": service("images/livekit-token/Dockerfile")}})
 
     assert compute_matrix_entries(bake) == [{"targets": "livekit-token", "variant": "common"}]
 
@@ -165,9 +165,9 @@ def test_unknown_target_reference_fails_loudly() -> None:
 def test_matrix_main_prints_bare_leg_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / "workloads").mkdir()
-    (tmp_path / "workloads" / "images.yml").write_text(
-        "services:\n  livekit-token:\n    build:\n      dockerfile: workloads/livekit-token/Dockerfile\n"
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "images.yml").write_text(
+        "services:\n  livekit-token:\n    build:\n      dockerfile: images/livekit-token/Dockerfile\n"
         "      tags:\n        - ghcr.io/example/livekit-token:latest\n"
     )
     monkeypatch.chdir(tmp_path)

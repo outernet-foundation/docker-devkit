@@ -38,14 +38,14 @@ class ScoreConfig(BaseModel):
     project_name: str
     cloud_storage_class: str
     local_storage_class: str
-    score_dir: Path = Path("stack/score")
-    bake_file: Path = Path("workloads/images.yml")
-    compose_output: Path = Path("stack/generated/compose/compose.yaml")
-    k8s_output: Path = Path("stack/generated/k8s/manifests.yaml")
+    score_dir: Path = Path("deployfiles/score")
+    bake_file: Path = Path("images/images.yml")
+    compose_output: Path = Path("deployfiles/generated/compose/compose.yaml")
+    k8s_output: Path = Path("deployfiles/generated/k8s/manifests.yaml")
     # --local writes here instead of the committed k8s output; consumers gitignore this path so a
     # local-only storage class cannot reach the artifact their cluster deploys.
-    k8s_local_output: Path = Path("stack/generated/k8s/manifests.local.yaml")
-    k8s_state: Path = Path("stack/generated/k8s/.score-k8s")
+    k8s_local_output: Path = Path("deployfiles/generated/k8s/manifests.local.yaml")
+    k8s_state: Path = Path("deployfiles/generated/k8s/.score-k8s")
     storage_class_var: str = "SCORE_STORAGE_CLASS"
     compose_provisioners: list[str] = Field(default_factory=list)
     compose_patch_templates: list[str] = Field(default_factory=list)

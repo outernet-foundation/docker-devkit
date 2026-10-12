@@ -115,10 +115,10 @@ class TestExpandComposeFiles:
 
 class TestResolveManifest:
     def test_resolves_images_manifest(self, tmp_path: Path):
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text("", encoding="utf-8")
 
-        assert resolve_manifest(tmp_path) == tmp_path / "workloads" / "images.yml"
+        assert resolve_manifest(tmp_path) == tmp_path / "images" / "images.yml"
 
     def test_returns_none_without_manifest(self, tmp_path: Path):
         assert resolve_manifest(tmp_path) is None
@@ -126,13 +126,13 @@ class TestResolveManifest:
 
 class TestResolveLock:
     def test_pairs_with_the_manifest(self, tmp_path: Path):
-        assert resolve_lock(tmp_path) == tmp_path / "workloads" / "images.lock"
+        assert resolve_lock(tmp_path) == tmp_path / "images" / "images.lock"
 
 
 class TestEnforceBakeDeclaration:
     def test_accepts_images_manifest_with_declaration(self, tmp_path: Path):
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text("", encoding="utf-8")
 
         enforce_bake_declaration(tmp_path, LifecycleConfig())
 
@@ -140,8 +140,8 @@ class TestEnforceBakeDeclaration:
         enforce_bake_declaration(tmp_path, None)
 
     def test_rejects_images_manifest_without_declaration(self, tmp_path: Path):
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text("", encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text("", encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="lifecycle"):
             enforce_bake_declaration(tmp_path, None)

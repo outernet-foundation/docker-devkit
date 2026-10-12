@@ -20,7 +20,7 @@ MANIFEST = (
     "services:\n"
     "  api:\n"
     "    build:\n"
-    "      dockerfile: workloads/api/Dockerfile\n"
+    "      dockerfile: images/api/Dockerfile\n"
     "      tags:\n"
     "        - localhost:5000/api:${API_SHA}\n"
 )
@@ -194,8 +194,8 @@ class TestEnforceMirrored:
 class TestMirrorVerb:
     def _write_tree(self, tmp_path: Path) -> None:
         _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text(MANIFEST, encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text(MANIFEST, encoding="utf-8")
 
     def test_copies_every_declared_reference(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         recorder = CommandRecorder()
@@ -227,8 +227,8 @@ class TestUpstreamAwareLockResolution:
     def _write_tree(self, tmp_path: Path, *, mirror: bool, manifest: str = MANIFEST) -> None:
         if mirror:
             _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text(manifest, encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text(manifest, encoding="utf-8")
 
     def test_records_declarations_under_the_mirror_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         self._write_tree(tmp_path, mirror=True)
@@ -243,7 +243,7 @@ class TestUpstreamAwareLockResolution:
             "ghcr.io/astral-sh/uv:0.12.15",
             "ghcr.io/outernet-foundation/placeframe/api:1.2.3",
         ]
-        lock = (tmp_path / "workloads" / "images.lock").read_text(encoding="utf-8")
+        lock = (tmp_path / "images" / "images.lock").read_text(encoding="utf-8")
         assert f"API_IMAGE={MIRROR_PREFIX}/ghcr.io/outernet-foundation/placeframe/api:1.2.3@{FAKE_DIGEST}" in lock
         assert f"UV_IMAGE={MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15@{FAKE_DIGEST}" in lock
 
@@ -266,12 +266,12 @@ class TestUpstreamAwareLockResolution:
         build_docker.run_build(lock_only=True)
 
         assert recorder.inspected == []
-        lock = (tmp_path / "workloads" / "images.lock").read_text(encoding="utf-8")
+        lock = (tmp_path / "images" / "images.lock").read_text(encoding="utf-8")
         assert f"ALPINE_IMAGE={MIRROR_PREFIX}/docker.io/library/alpine@{FAKE_DIGEST}" in lock
 
     def test_cached_entries_resolve_again_only_on_upgrade(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         self._write_tree(tmp_path, mirror=True)
-        (tmp_path / "workloads" / "images.lock").write_text(
+        (tmp_path / "images" / "images.lock").write_text(
             f"API_IMAGE={MIRROR_PREFIX}/ghcr.io/outernet-foundation/placeframe/api:1.2.3@{FAKE_DIGEST}\n"
             f"UV_IMAGE={MIRROR_PREFIX}/ghcr.io/astral-sh/uv:0.12.15@{FAKE_DIGEST}\n",
             encoding="utf-8",
@@ -289,8 +289,8 @@ class TestUpstreamAwareLockResolution:
 class TestBakeSeesLockValues:
     def _write_tree(self, tmp_path: Path) -> None:
         _write_config(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text(MANIFEST, encoding="utf-8")
+        (tmp_path / "images").mkdir()
+        (tmp_path / "images" / "images.yml").write_text(MANIFEST, encoding="utf-8")
 
     def _fake_bake(self, monkeypatch: pytest.MonkeyPatch) -> BakeEnvProbe:
         probe = BakeEnvProbe()
