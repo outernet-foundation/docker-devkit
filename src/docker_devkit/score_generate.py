@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
+from shutil import rmtree
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
 
@@ -37,6 +40,18 @@ class ManifestDocument(BaseModel):
     metadata: ManifestMetadata | None = None
 
 
+class WorkloadState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    instance_suffix: str = ""
+
+
+class ScoreState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workloads: dict[str, WorkloadState] = {}
+
+
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
@@ -62,6 +77,8 @@ def load_score_config(root: Path) -> ScoreConfig:
 
 
 def generate(config: ScoreConfig, target: Target = "both", local: bool = False) -> None:
+    _require_score_tools(config, target)
+
     root = Path.cwd()
     os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
@@ -71,6 +88,26 @@ def generate(config: ScoreConfig, target: Target = "both", local: bool = False) 
 
     if target in ("both", "k8s"):
         _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output)
+
+
+def _require_score_tools(config: ScoreConfig, target: Target) -> None:
+    wanted: list[tuple[str, str]] = []
+    if target in ("both", "compose"):
+        wanted.append(("score-compose", config.score_compose_version))
+    if target in ("both", "k8s"):
+        wanted.append(("score-k8s", config.score_k8s_version))
+
+    missing = [(tool, version) for tool, version in wanted if shutil.which(tool) is None]
+    if not missing:
+        return
+
+    lines = [
+        f"  {tool} {version}: https://github.com/score-spec/{tool}/releases/tag/{version}" for tool, version in missing
+    ]
+    raise RuntimeError(
+        "generate-score needs these on PATH, at these exact versions (output differs between releases):\n"
+        + "\n".join(lines)
+    )
 
 
 def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
@@ -98,9 +135,15 @@ def _generate_compose(root: Path, config: ScoreConfig) -> None:
             cwd=root / config.score_dir,
         )
 
+    rmtree(root / config.score_dir / ".score-compose", ignore_errors=True)
+
 
 def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
     state_dir = root / config.k8s_state
+    output_path = root / output
+    state_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     _init_state(
         "score-k8s init --no-sample",
         config.k8s_provisioners,
@@ -109,14 +152,13 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
         working_dir=state_dir.parent,
     )
 
-    output_path = root / output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     with _rendered_workloads(root, config) as workloads:
         bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
     sort_documents(output_path)
     normalise_state_paths(config, state_dir / "state.yaml")
+    normalise_instance_uids(state_dir / "state.yaml", output_path)
+    rmtree(state_dir, ignore_errors=True)
 
 
 def _init_state(
@@ -127,12 +169,11 @@ def _init_state(
     source_dir: Path,
     working_dir: Path,
 ) -> None:
-    flags = "".join(
-        f" --provisioners {shlex.quote(os.path.relpath(source_dir / name, working_dir))}" for name in provisioners
-    )
-    flags += "".join(
-        f" --patch-templates {shlex.quote(os.path.relpath(source_dir / name, working_dir))}" for name in patch_templates
-    )
+    def relative(name: str) -> str:
+        return shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())
+
+    flags = "".join(f" --provisioners {relative(name)}" for name in provisioners)
+    flags += "".join(f" --patch-templates {relative(name)}" for name in patch_templates)
     bash(f"{command}{flags}", cwd=working_dir)
 
 
@@ -164,6 +205,26 @@ def _placeholder_value(variable: str, name: str, bake_file: Path) -> str:
     if not value:
         raise SystemExit(f"{name}: ${{{variable}}} is not set. Is it a service in {bake_file}?")
     return value
+
+
+def normalise_instance_uids(state_path: Path, manifest_path: Path) -> None:
+    state = ScoreState.model_validate(yaml.safe_load(state_path.read_text(encoding="utf-8")) or {})
+
+    state_text = state_path.read_text(encoding="utf-8")
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+
+    for name, entry in state.workloads.items():
+        current = entry.instance_suffix
+        if not current:
+            continue
+        wanted = "-" + sha256(name.encode()).hexdigest()[:10]
+        if current == wanted:
+            continue
+        state_text = state_text.replace(f"instance_suffix: {current}", f"instance_suffix: {wanted}")
+        manifest_text = manifest_text.replace(f"{name}{current}", f"{name}{wanted}")
+
+    write_generated_file(state_path, state_text)
+    write_generated_file(manifest_path, manifest_text)
 
 
 def normalise_state_paths(config: ScoreConfig, path: Path) -> None:
