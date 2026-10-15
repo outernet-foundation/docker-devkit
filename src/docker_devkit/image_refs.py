@@ -71,7 +71,7 @@ def declared_references(root: Path) -> list[ImageReference]:
 def stray_references(
     root: Path,
     dockerfile_globs: tuple[str, ...] = ("workloads/*/Dockerfile*", "docker/*/Dockerfile*"),
-    image_globs: tuple[str, ...] = ("stack/score/*.yaml", "score/*.yaml"),
+    image_globs: tuple[str, ...] = ("stack/score/**/*.yaml", "score/**/*.yaml"),
 ) -> list[ImageReference]:
     dockerfile_paths = [path for dockerfile_glob in dockerfile_globs for path in sorted(root.glob(dockerfile_glob))]
     image_paths = [path for image_glob in image_globs for path in sorted(root.glob(image_glob))]
