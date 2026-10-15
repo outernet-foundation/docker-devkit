@@ -8,20 +8,23 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
-from shutil import rmtree
 from tempfile import TemporaryDirectory
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 import typer
 import yaml
 from bashrun.bash import bash
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
 
+# Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+
+# Treat sources under this prefix as relative to score-compose's state directory.
+STATE_PREFIX = ".score-compose/"
 
 Target = Literal["both", "compose", "k8s"]
 
@@ -52,6 +55,51 @@ class ScoreState(BaseModel):
     workloads: dict[str, WorkloadState] = {}
 
 
+class BindVolume(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["bind"]
+    source: str
+    target: str
+
+
+class OtherVolume(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+
+    # Reject malformed binds so they fail validation instead of passing through as non-binds.
+    @model_validator(mode="after")
+    def _reject_bind(self) -> Self:
+        if self.type == "bind":
+            raise ValueError("a bind volume is missing its source or target")
+        return self
+
+
+class ComposeService(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    volumes: list[BindVolume | OtherVolume] | None = None
+
+
+class ComposeDocument(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    services: dict[str, ComposeService] | None = None
+
+
+class ComposeDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_multiline(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    # Force literal block style for multiline strings, building the node directly to satisfy strict typing.
+    return yaml.ScalarNode("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
+
+
+ComposeDumper.add_representer(str, _represent_multiline)
+
+
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
@@ -66,20 +114,14 @@ def cli(
         ),
     ] = False,
 ) -> None:
-    generate(load_score_config(Path.cwd()), target, local)
-
-
-def load_score_config(root: Path) -> ScoreConfig:
-    config = load_config(root)
-    if config is None or config.generate_score is None:
+    root = Path.cwd()
+    devkit = load_config(root)
+    if devkit is None or devkit.generate_score is None:
         raise RuntimeError("a generate-score section is required in docker-devkit.yaml")
-    return config.generate_score
-
-
-def generate(config: ScoreConfig, target: Target = "both", local: bool = False) -> None:
+    config = devkit.generate_score
     _require_score_tools(config, target)
 
-    root = Path.cwd()
+    # Resolve image tags from the committed tree, exactly as up and build do.
     os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
 
@@ -110,21 +152,15 @@ def _require_score_tools(config: ScoreConfig, target: Target) -> None:
     )
 
 
-def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
-    for tool, version in (("score-k8s", config.score_k8s_version), ("score-compose", config.score_compose_version)):
-        archive = f"{tool}_{version}_linux_amd64.tar.gz"
-        bash(f"curl -fsSLO https://github.com/score-spec/{tool}/releases/download/{version}/{archive}")
-        bash(f"tar -xzf {archive} -C {bin_dir} {tool}")
-        Path(archive).unlink()
-
-
 def _generate_compose(root: Path, config: ScoreConfig) -> None:
+    score_dir = root / config.score_dir
+
     _init_state(
         f"score-compose init --project {config.project_name} --no-sample",
         config.compose_provisioners,
         config.compose_patch_templates,
-        source_dir=root / config.score_dir,
-        working_dir=root / config.score_dir,
+        source_dir=score_dir,
+        working_dir=score_dir,
     )
 
     (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
@@ -132,13 +168,60 @@ def _generate_compose(root: Path, config: ScoreConfig) -> None:
     with _rendered_workloads(root, config) as workloads:
         bash(
             f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
-            cwd=root / config.score_dir,
+            cwd=score_dir,
         )
 
-    rmtree(root / config.score_dir / ".score-compose", ignore_errors=True)
+    # Inline every bind as configs.content with $ doubled, leaving zero host-filesystem references.
+    document = yaml.safe_load((root / config.compose_output).read_text(encoding="utf-8"))
+    parsed = ComposeDocument.model_validate(document)
+    contents: dict[str, dict[str, str]] = {}
+    resolved: dict[str, Path] = {}
+    for name, service in (parsed.services or {}).items():
+        binds = [volume for volume in service.volumes or [] if isinstance(volume, BindVolume)]
+        if not binds:
+            continue
+        references: list[dict[str, str]] = []
+        for bind in binds:
+            # Resolve state-dir sources against score_dir, other relative sources against the repo root.
+            if bind.source.startswith(STATE_PREFIX):
+                path = score_dir / bind.source
+            elif Path(bind.source).is_absolute():
+                raise SystemExit(f"absolute bind source {bind.source} cannot be inlined hermetically")
+            else:
+                path = root / bind.source
+            if resolved.setdefault(path.name, path) != path:
+                raise SystemExit(f"bind sources {resolved[path.name]} and {path} collide on config name {path.name}")
+            contents[path.name] = {"content": path.read_text(encoding="utf-8").replace("$", "$$")}
+            references.append({"source": path.name, "target": bind.target})
+        raw = document["services"][name]
+        raw["configs"] = [*(raw.get("configs") or []), *references]
+        remaining = [volume for volume in raw["volumes"] if volume.get("type") != "bind"]
+        if remaining:
+            raw["volumes"] = remaining
+        else:
+            del raw["volumes"]
+
+    if contents:
+        document["configs"] = {**(document.get("configs") or {}), **contents}
+        # Dump through ComposeDumper so multiline content lands as literal blocks.
+        write_generated_file(
+            root / config.compose_output,
+            yaml.dump(
+                document,
+                Dumper=ComposeDumper,
+                default_flow_style=False,
+                sort_keys=False,
+                width=1_000_000,
+                allow_unicode=True,
+            ),
+        )
+
+    # The compose state dir is per-run temp; deleting it keeps the next run provisioning from scratch.
+    shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
 
 
 def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
+    # score-k8s writes its state to .score-k8s under its cwd, so run it beside the configured state dir.
     state_dir = root / config.k8s_state
     output_path = root / output
     state_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -155,10 +238,50 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
     with _rendered_workloads(root, config) as workloads:
         bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
-    sort_documents(output_path)
-    normalise_state_paths(config, state_dir / "state.yaml")
-    normalise_instance_uids(state_dir / "state.yaml", output_path)
-    rmtree(state_dir, ignore_errors=True)
+    # Sort documents by kind, namespace, and name, since score-k8s emits in randomised map order.
+    documents = [block for block in re.split(r"(?m)^---$\n", output_path.read_text(encoding="utf-8")) if block.strip()]
+    decorated: list[tuple[str, str, str, int, str]] = []
+    for index, block in enumerate(documents):
+        manifest = ManifestDocument.model_validate(yaml.safe_load(block) or {})
+        metadata = manifest.metadata or ManifestMetadata()
+        decorated.append((manifest.kind, metadata.namespace, metadata.name, index, block))
+    decorated.sort()
+    write_generated_file(output_path, "".join(f"---\n{block}" for *_, block in decorated))
+
+    # Reduce recorded workload paths to bare filenames so the state file reproduces.
+    state_path = state_dir / "state.yaml"
+    state_text = state_path.read_text(encoding="utf-8")
+    for name in config.workloads:
+        state_text = re.sub(rf"(?m)^(\s*file:\s*).*/{re.escape(name)}$", rf"\g<1>{name}", state_text)
+    write_generated_file(state_path, state_text)
+
+    # score-k8s mints a random instance_suffix per workload and stamps it into the manifests;
+    # rewrite it to a name-derived hash so output reproduces from fresh state. The state dir is
+    # per-run temp, so the rmtree leaves nothing behind either way.
+    state = ScoreState.model_validate(yaml.safe_load(state_text) or {})
+    manifest_text = output_path.read_text(encoding="utf-8")
+    for name, entry in state.workloads.items():
+        current = entry.instance_suffix
+        if not current:
+            continue
+        wanted = "-" + sha256(name.encode()).hexdigest()[:10]
+        if current == wanted:
+            continue
+        state_text = state_text.replace(f"instance_suffix: {current}", f"instance_suffix: {wanted}")
+        manifest_text = manifest_text.replace(f"{name}{current}", f"{name}{wanted}")
+    write_generated_file(state_path, state_text)
+    write_generated_file(output_path, manifest_text)
+
+    shutil.rmtree(state_dir, ignore_errors=True)
+
+
+def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
+    # Fetch release binaries rather than go install, since score-spec tags are not valid Go module versions.
+    for tool, version in (("score-k8s", config.score_k8s_version), ("score-compose", config.score_compose_version)):
+        archive = f"{tool}_{version}_linux_amd64.tar.gz"
+        bash(f"curl -fsSLO https://github.com/score-spec/{tool}/releases/download/{version}/{archive}")
+        bash(f"tar -xzf {archive} -C {bin_dir} {tool}")
+        Path(archive).unlink()
 
 
 def _init_state(
@@ -169,86 +292,46 @@ def _init_state(
     source_dir: Path,
     working_dir: Path,
 ) -> None:
-    def relative(name: str) -> str:
-        return shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())
-
-    flags = "".join(f" --provisioners {relative(name)}" for name in provisioners)
-    flags += "".join(f" --patch-templates {relative(name)}" for name in patch_templates)
+    # Init idempotently with POSIX relative paths, so no machine path or separator reaches a state file.
+    flags = "".join(
+        f" --provisioners {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
+        for name in provisioners
+    )
+    flags += "".join(
+        f" --patch-templates {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
+        for name in patch_templates
+    )
     bash(f"{command}{flags}", cwd=working_dir)
 
 
 @contextmanager
 def _rendered_workloads(root: Path, config: ScoreConfig) -> Generator[str]:
+    # Expand ${ALL_CAPS} placeholders into tempdir copies, since Score documents cannot read the environment.
     with TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
 
         for name in config.workloads:
             source = (root / config.score_dir / name).read_text(encoding="utf-8")
-            (directory / name).write_text(expand_placeholders(source, name, config.bake_file), "utf-8")
+            parts: list[str] = []
+            index = 0
+            for match in PLACEHOLDER.finditer(source):
+                parts.append(source[index : match.start()])
+                variable = match.group(1)
+                value = os.environ.get(variable)
+                if not value:
+                    raise SystemExit(f"{name}: ${{{variable}}} is not set. Is it a service in {config.bake_file}?")
+                parts.append(value)
+                index = match.end()
+            parts.append(source[index:])
+            (directory / name).write_text("".join(parts), "utf-8")
 
         yield " ".join((directory / name).as_posix() for name in config.workloads)
 
 
-def expand_placeholders(text: str, name: str, bake_file: Path) -> str:
-    parts: list[str] = []
-    index = 0
-    for match in PLACEHOLDER.finditer(text):
-        parts.append(text[index : match.start()])
-        parts.append(_placeholder_value(match.group(1), name, bake_file))
-        index = match.end()
-    parts.append(text[index:])
-    return "".join(parts)
-
-
-def _placeholder_value(variable: str, name: str, bake_file: Path) -> str:
-    value = os.environ.get(variable)
-    if not value:
-        raise SystemExit(f"{name}: ${{{variable}}} is not set. Is it a service in {bake_file}?")
-    return value
-
-
-def normalise_instance_uids(state_path: Path, manifest_path: Path) -> None:
-    state = ScoreState.model_validate(yaml.safe_load(state_path.read_text(encoding="utf-8")) or {})
-
-    state_text = state_path.read_text(encoding="utf-8")
-    manifest_text = manifest_path.read_text(encoding="utf-8")
-
-    for name, entry in state.workloads.items():
-        current = entry.instance_suffix
-        if not current:
-            continue
-        wanted = "-" + sha256(name.encode()).hexdigest()[:10]
-        if current == wanted:
-            continue
-        state_text = state_text.replace(f"instance_suffix: {current}", f"instance_suffix: {wanted}")
-        manifest_text = manifest_text.replace(f"{name}{current}", f"{name}{wanted}")
-
-    write_generated_file(state_path, state_text)
-    write_generated_file(manifest_path, manifest_text)
-
-
-def normalise_state_paths(config: ScoreConfig, path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
-    for name in config.workloads:
-        text = re.sub(rf"(?m)^(\s*file:\s*).*/{re.escape(name)}$", rf"\g<1>{name}", text)
-    write_generated_file(path, text)
-
-
-def sort_documents(path: Path) -> None:
-    documents = [block for block in re.split(r"(?m)^---$\n", path.read_text(encoding="utf-8")) if block.strip()]
-    ordered = [block for _, block in sorted(enumerate(documents), key=_document_sort_key)]
-    write_generated_file(path, "".join(f"---\n{block}" for block in ordered))
-
-
-def _document_sort_key(item: tuple[int, str]) -> tuple[str, str, str, int]:
-    index, block = item
-    document = ManifestDocument.model_validate(yaml.safe_load(block) or {})
-    metadata = document.metadata or ManifestMetadata()
-    return (document.kind, metadata.namespace, metadata.name, index)
-
-
 def write_generated_file(path: Path, text: str) -> None:
+    # Write with newline="" so a Windows run does not rewrite line endings as CRLF.
     with path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
+    # Normalise to 0644, since score-k8s writes its state file executable.
     path.chmod(0o644)
