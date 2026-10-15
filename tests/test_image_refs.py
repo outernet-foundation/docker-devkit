@@ -123,6 +123,24 @@ class TestStrayReferences:
             ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
         ]
 
+    def test_should_collect_nested_score_provisioner_directories(self, tmp_path: Path):
+        compose_directory = tmp_path / "stack" / "score" / "compose"
+        compose_directory.mkdir(parents=True)
+        (compose_directory / "seaweedfs.yaml").write_text(
+            "services: |\n  seaweedfs:\n    image: chrislusf/seaweedfs:3.82\n",
+            encoding="utf-8",
+        )
+        k8s_directory = tmp_path / "stack" / "score" / "k8s"
+        k8s_directory.mkdir()
+        (k8s_directory / "postgres.yaml").write_text(
+            "manifests: |\n  image: postgres:16.4\n",
+            encoding="utf-8",
+        )
+        assert stray_references(tmp_path) == [
+            ImageReference("", "chrislusf/seaweedfs:3.82"),
+            ImageReference("", "postgres:16.4"),
+        ]
+
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
         assert stray_references(tmp_path) == []
 
