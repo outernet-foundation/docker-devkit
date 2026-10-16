@@ -9,16 +9,17 @@ from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, NamedTuple, Self
 
 import typer
 import yaml
-from bashrun.bash import bash
+from bashrun.bash import bash, bash_output
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
+from .mirror import mirrored_ref
 
 # Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
@@ -88,6 +89,14 @@ class ComposeDocument(BaseModel):
     services: dict[str, ComposeService] | None = None
 
 
+class ToolRequirement(NamedTuple):
+    binary: str
+    version: str
+    release: str
+    archive: str
+    extract: str
+
+
 class ComposeDumper(yaml.SafeDumper):
     pass
 
@@ -119,7 +128,14 @@ def cli(
     if devkit is None or devkit.generate_score is None:
         raise RuntimeError("a generate-score section is required in docker-devkit.yaml")
     config = devkit.generate_score
-    _require_score_tools(config, target)
+    # Refuse to run without the exact pinned tools, since output differs between releases.
+    missing = [item for item in tool_requirements(config, target) if shutil.which(item.binary) is None]
+    if missing:
+        lines = [f"  {item.binary} {item.version}: {item.release}" for item in missing]
+        raise RuntimeError(
+            "generate-score needs these on PATH, at these exact versions (output differs between releases):\n"
+            + "\n".join(lines)
+        )
 
     # Resolve image tags from the committed tree, exactly as up and build do.
     os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
@@ -129,27 +145,49 @@ def cli(
         _generate_compose(root, config)
 
     if target in ("both", "k8s"):
-        _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output)
+        mirror_prefix = devkit.mirror.prefix if devkit.mirror is not None else None
+        _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output, mirror_prefix)
 
 
-def _require_score_tools(config: ScoreConfig, target: Target) -> None:
-    wanted: list[tuple[str, str]] = []
+def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequirement]:
+    requirements: list[ToolRequirement] = []
     if target in ("both", "compose"):
-        wanted.append(("score-compose", config.score_compose_version))
+        version = config.score_compose_version
+        releases = "https://github.com/score-spec/score-compose/releases"
+        requirements.append(
+            ToolRequirement(
+                binary="score-compose",
+                version=version,
+                release=f"{releases}/tag/{version}",
+                archive=f"{releases}/download/{version}/score-compose_{version}_linux_amd64.tar.gz",
+                extract="score-compose",
+            )
+        )
     if target in ("both", "k8s"):
-        wanted.append(("score-k8s", config.score_k8s_version))
-
-    missing = [(tool, version) for tool, version in wanted if shutil.which(tool) is None]
-    if not missing:
-        return
-
-    lines = [
-        f"  {tool} {version}: https://github.com/score-spec/{tool}/releases/tag/{version}" for tool, version in missing
-    ]
-    raise RuntimeError(
-        "generate-score needs these on PATH, at these exact versions (output differs between releases):\n"
-        + "\n".join(lines)
-    )
+        version = config.score_k8s_version
+        releases = "https://github.com/score-spec/score-k8s/releases"
+        requirements.append(
+            ToolRequirement(
+                binary="score-k8s",
+                version=version,
+                release=f"{releases}/tag/{version}",
+                archive=f"{releases}/download/{version}/score-k8s_{version}_linux_amd64.tar.gz",
+                extract="score-k8s",
+            )
+        )
+    # Strip one path component for helm, whose archive nests its binary under linux-amd64/.
+    if config.charts and target in ("both", "k8s"):
+        version = config.helm_version
+        requirements.append(
+            ToolRequirement(
+                binary="helm",
+                version=version,
+                release=f"https://github.com/helm/helm/releases/tag/v{version}",
+                archive=f"https://get.helm.sh/helm-v{version}-linux-amd64.tar.gz",
+                extract="--strip-components=1 linux-amd64/helm",
+            )
+        )
+    return requirements
 
 
 def _generate_compose(root: Path, config: ScoreConfig) -> None:
@@ -220,7 +258,7 @@ def _generate_compose(root: Path, config: ScoreConfig) -> None:
     shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
 
 
-def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
+def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None) -> None:
     # score-k8s writes its state to .score-k8s under its cwd, so run it beside the configured state dir.
     state_dir = root / config.k8s_state
     output_path = root / output
@@ -237,6 +275,25 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
 
     with _rendered_workloads(root, config) as workloads:
         bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
+
+    # Render charts through helm template into the same sorted documents, pulling each
+    # digest-pinned upstream ref from the org mirror; helm is a renderer, never a deployer.
+    if config.charts:
+        if mirror_prefix is None:
+            raise RuntimeError(
+                "charts are org-mirrored; a mirror section with 'prefix' is required in docker-devkit.yaml"
+            )
+        chart_blocks: list[str] = []
+        for chart in config.charts:
+            reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
+            values = "".join(f" --values {(root / path).as_posix()}" for path in chart.values)
+            namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
+            rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
+            chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
+        write_generated_file(
+            output_path,
+            output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in chart_blocks),
+        )
 
     # Sort documents by kind, namespace, and name, since score-k8s emits in randomised map order.
     documents = [block for block in re.split(r"(?m)^---$\n", output_path.read_text(encoding="utf-8")) if block.strip()]
@@ -275,12 +332,12 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path) -> None:
     shutil.rmtree(state_dir, ignore_errors=True)
 
 
-def ensure_score_tools(config: ScoreConfig, bin_dir: Path) -> None:
+def ensure_score_tools(config: ScoreConfig, bin_dir: Path, target: Target = "both") -> None:
     # Fetch release binaries rather than go install, since score-spec tags are not valid Go module versions.
-    for tool, version in (("score-k8s", config.score_k8s_version), ("score-compose", config.score_compose_version)):
-        archive = f"{tool}_{version}_linux_amd64.tar.gz"
-        bash(f"curl -fsSLO https://github.com/score-spec/{tool}/releases/download/{version}/{archive}")
-        bash(f"tar -xzf {archive} -C {bin_dir} {tool}")
+    for requirement in tool_requirements(config, target):
+        archive = Path(requirement.archive).name
+        bash(f"curl -fsSLO {requirement.archive}")
+        bash(f"tar -xzf {archive} -C {bin_dir} {requirement.extract}")
         Path(archive).unlink()
 
 

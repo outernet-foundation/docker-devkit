@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import importlib.metadata
 from pathlib import Path
+from typing import Self
 
 from packaging.specifiers import SpecifierSet
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from strictyaml import load as load_strict_yaml
 
 DEFAULT_CONFIG_PATH = Path("docker-devkit.yaml")
@@ -31,6 +32,24 @@ class MirrorConfig(BaseModel):
         return prefix
 
 
+class ChartConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    ref: str
+    values: list[Path] = Field(default_factory=list)
+    namespace: str | None = None
+
+    @field_validator("ref")
+    @classmethod
+    def _require_digest_pinned_oci(cls, ref: str) -> str:
+        if not ref.startswith("oci://"):
+            raise ValueError("chart refs are upstream-native OCI references (oci://registry/path@sha256:…)")
+        if "@sha256:" not in ref:
+            raise ValueError("chart refs are digest-pinned; a tag would move under the same name")
+        return ref
+
+
 class ScoreConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,8 +70,19 @@ class ScoreConfig(BaseModel):
     compose_patch_templates: list[str] = Field(default_factory=list)
     k8s_provisioners: list[str] = Field(default_factory=list)
     publishes: list[str] = Field(default_factory=list)
+    charts: list[ChartConfig] = Field(default_factory=list)
+    helm_version: str = ""
     score_k8s_version: str = "0.15.0"
     score_compose_version: str = "0.42.0"
+
+    @model_validator(mode="after")
+    def _require_helm_for_charts(self) -> Self:
+        if self.charts and not self.helm_version:
+            raise ValueError("helm_version is required when charts are declared")
+        names = [chart.name for chart in self.charts]
+        if len(names) != len(set(names)):
+            raise ValueError("chart names must be unique; a duplicate collides on rendered resource names")
+        return self
 
 
 class DockerDevkitConfig(BaseModel):

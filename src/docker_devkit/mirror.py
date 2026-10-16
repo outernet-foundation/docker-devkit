@@ -18,11 +18,15 @@ CRANE_VERSION = "v0.22.1"
 @app.command()
 def mirror() -> None:
     root = Path.cwd()
-    config = load_mirror_config(root)
-    if config is None:
+    devkit = load_config(root)
+    if devkit is None or devkit.mirror is None:
         raise RuntimeError("a mirror section with 'prefix' is required in docker-devkit.yaml to mirror")
+    config = devkit.mirror
 
     targets = sorted(declared_references(root), key=lambda occurrence: occurrence.reference)
+    charts = (
+        sorted(devkit.generate_score.charts, key=lambda chart: chart.ref) if devkit.generate_score is not None else []
+    )
     print(f"Install crane {CRANE_VERSION}")
     sudo = "sudo " if os.geteuid() != 0 else ""
     archive = "go-containerregistry_Linux_x86_64.tar.gz"
@@ -33,7 +37,12 @@ def mirror() -> None:
         destination = mirrored_ref(target.reference, config.prefix)
         print(f"Mirror {target.reference} -> {destination}")
         bash(f"crane copy {target.reference} {destination}")
-    print(f"Mirrored images: {len(targets)}")
+    for chart in charts:
+        reference = chart.ref.removeprefix("oci://")
+        destination = mirrored_ref(reference, config.prefix)
+        print(f"Mirror {reference} -> {destination}")
+        bash(f"crane copy {reference} {destination}")
+    print(f"Mirrored references: {len(targets) + len(charts)}")
 
 
 def load_mirror_config(root: Path) -> MirrorConfig | None:
