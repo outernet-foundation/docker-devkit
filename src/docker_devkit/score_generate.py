@@ -20,6 +20,7 @@ from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
 from .mirror import mirrored_ref
+from .provisioners import ComposeDumper, compiled_provisioners
 
 # Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
@@ -95,18 +96,6 @@ class ToolRequirement(NamedTuple):
     release: str
     archive: str
     extract: str
-
-
-class ComposeDumper(yaml.SafeDumper):
-    pass
-
-
-def _represent_multiline(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
-    # Force literal block style for multiline strings, building the node directly to satisfy strict typing.
-    return yaml.ScalarNode("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
-
-
-ComposeDumper.add_representer(str, _represent_multiline)
 
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
@@ -193,21 +182,21 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
 def _generate_compose(root: Path, config: ScoreConfig) -> None:
     score_dir = root / config.score_dir
 
-    _init_state(
-        f"score-compose init --project {config.project_name} --no-sample",
-        config.compose_provisioners,
-        config.compose_patch_templates,
-        source_dir=score_dir,
-        working_dir=score_dir,
-    )
-
-    (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
-    publishes = "".join(f" --publish {publish}" for publish in config.publishes)
-    with _rendered_workloads(root, config) as workloads:
-        bash(
-            f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
-            cwd=score_dir,
+    with compiled_provisioners(score_dir, config.compose_provisioners) as provisioners:
+        _init_state(
+            f"score-compose init --project {config.project_name} --no-sample",
+            provisioners,
+            [score_dir / name for name in config.compose_patch_templates],
+            working_dir=score_dir,
         )
+
+        (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
+        publishes = "".join(f" --publish {publish}" for publish in config.publishes)
+        with _rendered_workloads(root, config) as workloads:
+            bash(
+                f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
+                cwd=score_dir,
+            )
 
     # Inline every bind as configs.content with $ doubled, leaving zero host-filesystem references.
     document = yaml.safe_load((root / config.compose_output).read_text(encoding="utf-8"))
@@ -265,16 +254,16 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
     state_dir.parent.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _init_state(
-        "score-k8s init --no-sample",
-        config.k8s_provisioners,
-        [],
-        source_dir=root / config.score_dir,
-        working_dir=state_dir.parent,
-    )
+    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners) as provisioners:
+        _init_state(
+            "score-k8s init --no-sample",
+            provisioners,
+            [],
+            working_dir=state_dir.parent,
+        )
 
-    with _rendered_workloads(root, config) as workloads:
-        bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
+        with _rendered_workloads(root, config) as workloads:
+            bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
     # Render charts through helm template into the same sorted documents, pulling each
     # digest-pinned upstream ref from the org mirror; helm is a renderer, never a deployer.
@@ -343,20 +332,19 @@ def ensure_score_tools(config: ScoreConfig, bin_dir: Path, target: Target = "bot
 
 def _init_state(
     command: str,
-    provisioners: list[str],
-    patch_templates: list[str],
+    provisioners: list[Path],
+    patch_templates: list[Path],
     *,
-    source_dir: Path,
     working_dir: Path,
 ) -> None:
     # Init idempotently with POSIX relative paths, so no machine path or separator reaches a state file.
     flags = "".join(
-        f" --provisioners {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
-        for name in provisioners
+        f" --provisioners {shlex.quote(Path(os.path.relpath(provisioner, working_dir)).as_posix())}"
+        for provisioner in provisioners
     )
     flags += "".join(
-        f" --patch-templates {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
-        for name in patch_templates
+        f" --patch-templates {shlex.quote(Path(os.path.relpath(patch_template, working_dir)).as_posix())}"
+        for patch_template in patch_templates
     )
     bash(f"{command}{flags}", cwd=working_dir)
 
