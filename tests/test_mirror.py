@@ -212,7 +212,33 @@ class TestMirrorVerb:
             f"crane copy {upstream_uv} {MIRROR_PREFIX}/{upstream_uv}",
             f"crane copy {upstream_api} {MIRROR_PREFIX}/{upstream_api}",
         ]
-        assert "Mirrored images: 2" in result.stdout
+        assert "Mirrored references: 2" in result.stdout
+
+    def test_copies_declared_charts_beside_images(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        recorder = CommandRecorder()
+        monkeypatch.setattr(mirror, "bash", recorder.run)
+        monkeypatch.chdir(tmp_path)
+        _write_config(
+            tmp_path,
+            {
+                "mirror": {"prefix": MIRROR_PREFIX},
+                "generate-score": {
+                    "workloads": ["api.yaml"],
+                    "project_name": "example",
+                    "cloud_storage_class": "cloud-volumes",
+                    "local_storage_class": "local-path",
+                    "helm_version": "3.22.1",
+                    "charts": [{"name": "loki", "ref": f"oci://ghcr.io/grafana/helm-charts/loki@{FAKE_DIGEST}"}],
+                },
+            },
+        )
+
+        result = runner.invoke(mirror.app, [])
+
+        assert result.exit_code == 0
+        upstream_chart = f"ghcr.io/grafana/helm-charts/loki@{FAKE_DIGEST}"
+        assert f"crane copy {upstream_chart} {MIRROR_PREFIX}/{upstream_chart}" in recorder.commands
+        assert "Mirrored references: 1" in result.stdout
 
     def test_errors_without_mirror_table(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
