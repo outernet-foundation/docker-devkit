@@ -14,8 +14,7 @@ from bashrun.bash import bash, bash_check, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
 from .config import MirrorConfig
-from .documents import BakeDocument, parse_bake
-from .context_sha import compute_service_shas
+from .documents import BakeDocument, compute_service_shas, parse_bake
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
 from .lifecycle import GPU_TYPES, LOCK_PATH, Gpu, detect_gpu, parse_env_file, require_manifest

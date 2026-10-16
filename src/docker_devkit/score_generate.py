@@ -17,8 +17,7 @@ from bashrun.bash import bash, bash_output
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .config import ScoreConfig, SecretsConfig, load_config
-from .context_sha import compute_service_shas
-from .documents import parse_bake
+from .documents import compute_service_shas, parse_bake
 from .markers import contains_marker, load_lock, resolve_includes, resolve_lock_refs
 from .mirror import mirrored_ref
 from .provisioners import compiled_provisioners, dump_compose

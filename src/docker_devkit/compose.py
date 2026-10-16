@@ -6,8 +6,7 @@ import typer
 from bashrun.bash import bash_handoff
 
 from .build_docker import run_build
-from .context_sha import compute_service_shas
-from .documents import parse_bake
+from .documents import compute_service_shas, parse_bake
 from .lifecycle import (
     LOCK_PATH,
     Gpu,
