@@ -14,14 +14,12 @@ from bashrun.bash import bash, bash_check, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
 from .config import MirrorConfig
-from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, parse_bake
 from .context_sha import compute_service_shas
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
-from .lifecycle import LOCK_PATH, require_manifest
+from .lifecycle import GPU_TYPES, LOCK_PATH, Gpu, detect_gpu, parse_env_file, require_manifest
 from .mirror import load_mirror_config, mirrored_ref
-from .modes import parse_env_file
 
 
 METADATA_PATH = Path("metadata.json")

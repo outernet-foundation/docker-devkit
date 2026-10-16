@@ -7,18 +7,20 @@ from bashrun.bash import bash_handoff
 
 from .build_docker import run_build
 from .context_sha import compute_service_shas
-from .detect_gpu import Gpu, detect_gpu
 from .documents import parse_bake
 from .lifecycle import (
     LOCK_PATH,
+    Gpu,
+    detect_gpu,
     enforce_bake_declaration,
     enumerate_profiles,
     expand_compose_files,
     load_lifecycle_config,
+    parse_env_file,
+    resolve_compose_profiles,
     resolve_manifest,
 )
 from .mirror import enforce_mirrored, load_mirror_config
-from .modes import parse_env_file, resolve_compose_profiles
 
 ENV_FILE = Path(".env")
 

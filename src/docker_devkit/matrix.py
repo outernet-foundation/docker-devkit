@@ -5,9 +5,8 @@ from pathlib import Path
 
 import typer
 
-from .detect_gpu import GPU_TYPES
 from .documents import BakeDocument, parse_bake
-from .lifecycle import require_manifest
+from .lifecycle import GPU_TYPES, require_manifest
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
