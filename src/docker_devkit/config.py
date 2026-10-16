@@ -50,6 +50,14 @@ class ChartConfig(BaseModel):
         return ref
 
 
+class SecretsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: Path
+    k8s_secret: str
+    output: Path = Path("stack/generated/secrets.txt")
+
+
 class ScoreConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -70,6 +78,7 @@ class ScoreConfig(BaseModel):
     compose_patch_templates: list[str] = Field(default_factory=list)
     k8s_provisioners: list[str] = Field(default_factory=list)
     publishes: list[str] = Field(default_factory=list)
+    secrets: SecretsConfig | None = None
     charts: list[ChartConfig] = Field(default_factory=list)
     helm_version: str = ""
     score_k8s_version: str = "0.15.0"

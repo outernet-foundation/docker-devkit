@@ -65,7 +65,7 @@ def parse_entries(text: str) -> Any:
 
 def compile_entry(text: str, name: str) -> str:
     # These entries carry no include markers, so the root is never consulted.
-    return compile_provisioner_document(text, name, Path())
+    return compile_provisioner_document(text, name, Path(), {})
 
 
 def test_uri_and_type_are_required() -> None:
@@ -253,7 +253,7 @@ def test_compiled_provisioners_write_tempdir_copies_under_the_source_dir(tmp_pat
     (tmp_path / "compose").mkdir()
     (tmp_path / "compose" / "database.yaml").write_text(COMPOSE_ENTRY, encoding="utf-8")
 
-    with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path) as paths:
+    with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as paths:
         assert len(paths) == 1
         compiled_path = paths[0]
         assert tmp_path in compiled_path.parents
@@ -266,7 +266,7 @@ def test_compiled_provisioners_write_tempdir_copies_under_the_source_dir(tmp_pat
 
 
 def test_compiled_provisioners_yield_nothing_without_names(tmp_path: Path) -> None:
-    with compiled_provisioners(tmp_path, [], tmp_path) as paths:
+    with compiled_provisioners(tmp_path, [], tmp_path, {}) as paths:
         assert paths == []
 
     assert list(tmp_path.iterdir()) == []
@@ -283,7 +283,10 @@ def test_compiled_provisioners_reject_string_form_before_any_writes(tmp_path: Pa
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match=r"legacy\.yaml"), compiled_provisioners(tmp_path, ["legacy.yaml"], tmp_path):
+    with (
+        pytest.raises(RuntimeError, match=r"legacy\.yaml"),
+        compiled_provisioners(tmp_path, ["legacy.yaml"], tmp_path, {}),
+    ):
         pass
 
     assert list(tmp_path.glob("compiled-provisioners-*")) == []
@@ -293,10 +296,10 @@ def test_compiled_output_is_independent_of_working_directory(tmp_path: Path) -> 
     (tmp_path / "compose").mkdir()
     (tmp_path / "compose" / "database.yaml").write_text(COMPOSE_ENTRY, encoding="utf-8")
 
-    expected = compile_provisioner_document(COMPOSE_ENTRY, "database.yaml", tmp_path)
+    expected = compile_provisioner_document(COMPOSE_ENTRY, "database.yaml", tmp_path, {})
 
     with chdir(Path("/")):
-        with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path) as paths:
+        with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as paths:
             compiled = paths[0].read_text(encoding="utf-8")
 
     assert compiled == expected
@@ -322,7 +325,7 @@ def test_compile_resolves_text_includes_before_stringifying(tmp_path: Path) -> N
     )
 
     compiled = parse_entries(
-        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path)
+        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})
     )[0]
 
     config_map = yaml.safe_load(compiled["manifests"])[0]
@@ -346,7 +349,9 @@ def test_compile_dumps_resolved_text_includes_as_literal_blocks(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    compiled = compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path)
+    compiled = compile_provisioner_document(
+        (tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {}
+    )
 
     assert "config.river: |" in compiled
 
@@ -367,4 +372,75 @@ def test_compile_include_missing_file_names_the_source_and_path(tmp_path: Path) 
     )
 
     with pytest.raises(RuntimeError, match=r"k8s\.yaml.*missing\.river"):
-        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path)
+        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})
+
+
+LOCK_ENTRY = {"ALLOY_IMAGE": "ghcr.io/mirror/docker.io/grafana/alloy:v1.9.0@sha256:" + "a" * 64}
+
+
+def test_compile_resolves_lock_markers_before_stringifying(tmp_path: Path) -> None:
+    (tmp_path / "k8s.yaml").write_text(
+        """
+- uri: template://example/relay-k8s
+  type: example-relay
+  manifests:
+    - apiVersion: apps/v1
+      kind: Deployment
+      spec:
+        template:
+          spec:
+            containers:
+            - name: relay
+              image:
+                lock: ALLOY_IMAGE
+""",
+        encoding="utf-8",
+    )
+
+    compiled = parse_entries(
+        compile_provisioner_document(
+            (tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, LOCK_ENTRY
+        )
+    )[0]
+
+    deployment = yaml.safe_load(compiled["manifests"])[0]
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == LOCK_ENTRY["ALLOY_IMAGE"]
+
+
+def test_compile_lock_markers_resolve_in_services_too(tmp_path: Path) -> None:
+    (tmp_path / "compose.yaml").write_text(
+        """
+- uri: template://example/relay
+  type: example-relay
+  services:
+    relay:
+      image:
+        lock: ALLOY_IMAGE
+""",
+        encoding="utf-8",
+    )
+
+    compiled = parse_entries(
+        compile_provisioner_document(
+            (tmp_path / "compose.yaml").read_text(encoding="utf-8"), "compose.yaml", tmp_path, LOCK_ENTRY
+        )
+    )[0]
+
+    services = yaml.safe_load(compiled["services"])
+    assert services["relay"]["image"] == LOCK_ENTRY["ALLOY_IMAGE"]
+
+
+def test_compile_unknown_lock_entry_names_the_source(tmp_path: Path) -> None:
+    (tmp_path / "k8s.yaml").write_text(
+        """
+- uri: template://example/relay-k8s
+  type: example-relay
+  manifests:
+    - image:
+        lock: MISSING_IMAGE
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match=r"k8s\.yaml.*'MISSING_IMAGE' does not exist"):
+        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})

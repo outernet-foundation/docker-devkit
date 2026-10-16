@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from docker_devkit.config import ChartConfig
+from docker_devkit.config import ChartConfig, SecretsConfig
 from docker_devkit.score_generate import (
     BindVolume,
     ComposeService,
@@ -80,6 +80,37 @@ def test_score_config_rejects_duplicate_chart_names() -> None:
         })
 
 
+def test_score_config_accepts_a_secrets_contract() -> None:
+    config = ScoreConfig.model_validate({
+        **CONFIG_BASE,
+        "secrets": {"file": "stack/score/secrets.yaml", "k8s_secret": "placeframe-secrets"},
+    })
+
+    assert config.secrets is not None
+    assert config.secrets.model_dump() == {
+        "file": Path("stack/score/secrets.yaml"),
+        "k8s_secret": "placeframe-secrets",
+        "output": Path("stack/generated/secrets.txt"),
+    }
+
+
+def test_secrets_config_rejects_unknown_keys() -> None:
+    with pytest.raises(ValidationError):
+        SecretsConfig.model_validate({
+            "file": "stack/score/secrets.yaml",
+            "k8s_secret": "placeframe-secrets",
+            "rotation": "weekly",
+        })
+
+
+def test_secrets_config_requires_file_and_secret_name() -> None:
+    with pytest.raises(ValidationError):
+        SecretsConfig.model_validate({"file": "stack/score/secrets.yaml"})
+
+    with pytest.raises(ValidationError):
+        SecretsConfig.model_validate({"k8s_secret": "placeframe-secrets"})
+
+
 def testtool_requirements_gate_helm_on_charts_and_target() -> None:
     with_charts = ScoreConfig.model_validate({
         **CONFIG_BASE,
@@ -151,7 +182,7 @@ def test_values_without_markers_pass_through_as_the_committed_path(tmp_path: Pat
     (values / "grafana.yaml").write_text("service:\n  port: 3000\n", encoding="utf-8")
 
     with TemporaryDirectory() as temporary_directory:
-        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), Path(temporary_directory))
+        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), Path(temporary_directory), {})
 
         assert argument == (values / "grafana.yaml").as_posix()
         assert list(Path(temporary_directory).iterdir()) == []
@@ -171,7 +202,7 @@ def test_values_with_markers_resolve_into_the_tempdir(tmp_path: Path) -> None:
 
     with TemporaryDirectory() as temporary_directory:
         values_dir = Path(temporary_directory)
-        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), values_dir)
+        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), values_dir, {})
 
         assert argument == (values_dir / "values" / "grafana.yaml").as_posix()
         resolved = yaml.safe_load((values_dir / "values" / "grafana.yaml").read_text(encoding="utf-8"))
@@ -196,9 +227,52 @@ def test_text_markers_in_values_dump_as_literal_blocks(tmp_path: Path) -> None:
 
     with TemporaryDirectory() as temporary_directory:
         values_dir = Path(temporary_directory)
-        argument = resolved_values_path(tmp_path, Path("values/loki.yaml"), values_dir)
+        argument = resolved_values_path(tmp_path, Path("values/loki.yaml"), values_dir, {})
         text = (values_dir / "values" / "loki.yaml").read_text(encoding="utf-8")
 
     assert argument.endswith("loki.yaml")
     assert "config: |" in text
     assert "${S3_ACCESS_KEY}" in text
+
+
+LOCK_IMAGES = {"GRAFANA_IMAGE": "ghcr.io/outernet-foundation/mirror/docker.io/grafana/grafana:11.6.0@" + DIGEST}
+
+
+def test_values_with_lock_markers_resolve_into_the_tempdir(tmp_path: Path) -> None:
+    (tmp_path / "values").mkdir()
+    (tmp_path / "values" / "grafana.yaml").write_text(
+        "image:\n  lock-image:\n    key: GRAFANA_IMAGE\n    digest_field: sha\n",
+        encoding="utf-8",
+    )
+
+    with TemporaryDirectory() as temporary_directory:
+        values_dir = Path(temporary_directory)
+        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), values_dir, LOCK_IMAGES)
+        resolved = yaml.safe_load((values_dir / "values" / "grafana.yaml").read_text(encoding="utf-8"))
+
+    assert argument == (values_dir / "values" / "grafana.yaml").as_posix()
+    assert resolved["image"]["registry"] == "ghcr.io/outernet-foundation/mirror/docker.io/grafana"
+    assert resolved["image"]["repository"] == "grafana"
+    assert resolved["image"]["tag"] == "11.6.0"
+    assert resolved["image"]["sha"] == DIGEST.removeprefix("sha256:")
+
+
+def test_values_lock_markers_resolve_after_includes(tmp_path: Path) -> None:
+    (tmp_path / "workloads").mkdir()
+    (tmp_path / "workloads" / "images.yaml").write_text(
+        "image:\n  lock-image: GRAFANA_IMAGE\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "values").mkdir()
+    (tmp_path / "values" / "grafana.yaml").write_text(
+        "include-yaml: workloads/images.yaml\n",
+        encoding="utf-8",
+    )
+
+    with TemporaryDirectory() as temporary_directory:
+        values_dir = Path(temporary_directory)
+        argument = resolved_values_path(tmp_path, Path("values/grafana.yaml"), values_dir, LOCK_IMAGES)
+        resolved = yaml.safe_load((values_dir / "values" / "grafana.yaml").read_text(encoding="utf-8"))
+
+    assert argument == (values_dir / "values" / "grafana.yaml").as_posix()
+    assert resolved["image"]["digest"] == DIGEST

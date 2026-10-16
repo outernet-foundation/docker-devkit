@@ -20,8 +20,10 @@ from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
 from .includes import contains_include, resolve_includes
+from .locks import contains_lock_ref, load_lock, resolve_lock_refs
 from .mirror import mirrored_ref
 from .provisioners import ComposeDumper, compiled_provisioners
+from .secrets import compose_consumed_keys, k8s_consumed_keys, load_declaration, mint_text, validate_consumed
 
 # Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
@@ -130,13 +132,19 @@ def cli(
     # Resolve image tags from the committed tree, exactly as up and build do.
     os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
+    # The lock beside the manifest is the single digest source for authored lock markers.
+    images = load_lock(root / config.bake_file.with_suffix(".lock"))
+    k8s_output = config.k8s_local_output if local else config.k8s_output
 
     if target in ("both", "compose"):
-        _generate_compose(root, config)
+        _generate_compose(root, config, images)
 
     if target in ("both", "k8s"):
         mirror_prefix = devkit.mirror.prefix if devkit.mirror is not None else None
-        _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output, mirror_prefix)
+        _generate_k8s(root, config, k8s_output, mirror_prefix, images)
+
+    if config.secrets is not None:
+        _enforce_secret_contract(root, config, target, k8s_output)
 
 
 def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequirement]:
@@ -180,10 +188,10 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
     return requirements
 
 
-def _generate_compose(root: Path, config: ScoreConfig) -> None:
+def _generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -> None:
     score_dir = root / config.score_dir
 
-    with compiled_provisioners(score_dir, config.compose_provisioners, root) as provisioners:
+    with compiled_provisioners(score_dir, config.compose_provisioners, root, images) as provisioners:
         _init_state(
             f"score-compose init --project {config.project_name} --no-sample",
             provisioners,
@@ -248,14 +256,16 @@ def _generate_compose(root: Path, config: ScoreConfig) -> None:
     shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
 
 
-def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None) -> None:
+def _generate_k8s(
+    root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None, images: dict[str, str]
+) -> None:
     # score-k8s writes its state to .score-k8s under its cwd, so run it beside the configured state dir.
     state_dir = root / config.k8s_state
     output_path = root / output
     state_dir.parent.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners, root) as provisioners:
+    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners, root, images) as provisioners:
         _init_state(
             "score-k8s init --no-sample",
             provisioners,
@@ -278,7 +288,9 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
             values_dir = Path(values_directory)
             for chart in config.charts:
                 reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
-                values = "".join(f" --values {resolved_values_path(root, path, values_dir)}" for path in chart.values)
+                values = "".join(
+                    f" --values {resolved_values_path(root, path, values_dir, images)}" for path in chart.values
+                )
                 namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
                 rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
                 chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
@@ -324,15 +336,46 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
     shutil.rmtree(state_dir, ignore_errors=True)
 
 
-def resolved_values_path(root: Path, path: Path, values_dir: Path) -> str:
-    # helm template --values consumes include-resolved copies written into the per-run tempdir;
-    # a values file with no markers passes through as the committed path, untouched.
+def _enforce_secret_contract(root: Path, config: ScoreConfig, target: Target, k8s_output: Path) -> None:
+    # The declaration is the tier-neutral contract; each rendering validates only what this
+    # run generated, and the mint list derives from the declaration alone.
+    secrets = config.secrets
+    if secrets is None:
+        return
+
+    declared = load_declaration(root / secrets.file)
+    if target in ("both", "compose"):
+        artifact = root / config.compose_output
+        validate_consumed(
+            compose_consumed_keys(artifact.read_text(encoding="utf-8")),
+            declared,
+            "compose",
+            secrets.file.as_posix(),
+        )
+
+    if target in ("both", "k8s"):
+        artifact = root / k8s_output
+        validate_consumed(
+            k8s_consumed_keys(artifact.read_text(encoding="utf-8"), secrets.k8s_secret),
+            declared,
+            "k8s",
+            secrets.file.as_posix(),
+        )
+
+    output = root / secrets.output
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_generated_file(output, mint_text(declared))
+
+
+def resolved_values_path(root: Path, path: Path, values_dir: Path, images: dict[str, str]) -> str:
+    # helm template --values consumes include- and lock-resolved copies written into the per-run
+    # tempdir; a values file with no markers passes through as the committed path, untouched.
     source = root / path
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
-    if not contains_include(document):
+    if not contains_include(document) and not contains_lock_ref(document):
         return source.as_posix()
 
-    resolved = resolve_includes(document, root, path.as_posix())
+    resolved = resolve_lock_refs(resolve_includes(document, root, path.as_posix()), images, path.as_posix())
     target = values_dir / path
     target.parent.mkdir(parents=True, exist_ok=True)
     write_generated_file(
