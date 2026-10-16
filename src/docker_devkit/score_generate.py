@@ -16,7 +16,7 @@ import yaml
 from bashrun.bash import bash, bash_output
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from .config import ScoreConfig, load_config
+from .config import ScoreConfig, SecretsConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
 from .includes import contains_include, resolve_includes
@@ -144,7 +144,7 @@ def cli(
         _generate_k8s(root, config, k8s_output, mirror_prefix, images)
 
     if config.secrets is not None:
-        _enforce_secret_contract(root, config, target, k8s_output)
+        _enforce_secret_contract(root, config, target, k8s_output, config.secrets)
 
 
 def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequirement]:
@@ -336,13 +336,11 @@ def _generate_k8s(
     shutil.rmtree(state_dir, ignore_errors=True)
 
 
-def _enforce_secret_contract(root: Path, config: ScoreConfig, target: Target, k8s_output: Path) -> None:
+def _enforce_secret_contract(
+    root: Path, config: ScoreConfig, target: Target, k8s_output: Path, secrets: SecretsConfig
+) -> None:
     # The declaration is the tier-neutral contract; each rendering validates only what this
     # run generated, and the mint list derives from the declaration alone.
-    secrets = config.secrets
-    if secrets is None:
-        return
-
     declared = load_declaration(root / secrets.file)
     if target in ("both", "compose"):
         artifact = root / config.compose_output

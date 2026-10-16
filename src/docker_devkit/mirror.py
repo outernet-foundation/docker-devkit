@@ -71,11 +71,3 @@ def enforce_mirrored(lock_data: dict[str, str]) -> None:
             f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
             "the CI mirror job populates it when the declaring change runs"
         )
-
-
-def main() -> None:
-    app()
-
-
-if __name__ == "__main__":
-    main()

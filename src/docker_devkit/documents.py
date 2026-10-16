@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TypeVar
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 DECLARED_REFERENCE_PATTERN = re.compile(
     r"^(?P<path>[^:@\s$]+)(?::(?P<tag>[^@\s$]+))?(?:@(?P<digest>sha256:[a-f0-9]{64}))?$"

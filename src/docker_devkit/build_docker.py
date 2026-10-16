@@ -17,7 +17,6 @@ from build_artifact_registry.setup_oras import install_oras
 from .config import MirrorConfig
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
 from .documents import BakeDocument, digest_pinned, parse_bake
-from pydantic_settings import BaseSettings
 from .context_sha import compute_service_shas
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
@@ -25,12 +24,6 @@ from .lifecycle import require_manifest, resolve_lock
 from .mirror import load_mirror_config, mirrored_ref
 from .modes import parse_env_file
 
-
-class Settings(BaseSettings):
-    wsl_distro_name: str | None = None
-
-
-settings = Settings.model_validate({})
 
 METADATA_PATH = Path("metadata.json")
 
@@ -281,10 +274,9 @@ def distill_digest_manifest(baked_images: dict[str, Any], targets: list[str]) ->
     return manifest
 
 
-# Vibe code - Gemini 3
 def _check_gc_limits(min_gb: int = 60):
     candidates = [Path("/etc/docker/daemon.json"), Path(os.path.expanduser("~/.docker/daemon.json"))]
-    if settings.wsl_distro_name is not None:
+    if os.getenv("WSL_DISTRO_NAME") is not None:
         try:
             win_home = bash_output('wslpath $(cmd.exe /c "echo %UserProfile%" 2>/dev/null)').strip()
             candidates.append(Path(win_home) / ".docker" / "daemon.json")
@@ -337,11 +329,3 @@ def compute_default_targets(bake: BakeDocument, gpu: Gpu, gpu_only: bool = False
         if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
         and service not in cross_compile_targets
     ]
-
-
-def main() -> None:
-    app()
-
-
-if __name__ == "__main__":
-    main()
