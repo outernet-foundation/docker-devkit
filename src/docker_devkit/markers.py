@@ -3,14 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, TypeIs
 
+import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-# Resolve single-key lock markers after includes: "lock" substitutes the entry's full image
-# reference, "lock-image" expands it into the registry/repository/tag/digest fields chart
-# values want.
+# Authoring markers are single-key mappings so authored sources stay plain-YAML-parseable.
+# Include markers insert a repo-root-relative file's bytes or parsed structure; lock markers
+# substitute image-lock entries. Include resolution runs before lock resolution, and text
+# content is never scanned for markers.
+TEXT_MARKER = "include"
+YAML_MARKER = "include-yaml"
 LOCK_MARKER = "lock"
 LOCK_IMAGE_MARKER = "lock-image"
-MARKERS = (LOCK_MARKER, LOCK_IMAGE_MARKER)
+INCLUDE_MARKERS = (TEXT_MARKER, YAML_MARKER)
+LOCK_MARKERS = (LOCK_MARKER, LOCK_IMAGE_MARKER)
+MARKERS = INCLUDE_MARKERS + LOCK_MARKERS
 DIGEST_FIELDS = ("digest", "sha")
 
 
@@ -26,6 +32,12 @@ class LockImageSpec(BaseModel):
         if value not in DIGEST_FIELDS:
             raise ValueError(f"digest_field must be one of {DIGEST_FIELDS}")
         return value
+
+
+def load_lock(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        raise RuntimeError(f"{path.as_posix()}: the image lock is required for generation (build writes it)")
+    return parse_lock(path.read_text(encoding="utf-8"), path.as_posix())
 
 
 def parse_lock(text: str, source: str) -> dict[str, str]:
@@ -46,27 +58,55 @@ def parse_lock(text: str, source: str) -> dict[str, str]:
     return images
 
 
-def load_lock(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise RuntimeError(f"{path.as_posix()}: the image lock is required for generation (build writes it)")
-    return parse_lock(path.read_text(encoding="utf-8"), path.as_posix())
-
-
-def contains_lock_ref(node: Any) -> bool:
-    if _lock_marker_entry(node) is not None:
+def contains_marker(node: Any) -> bool:
+    if _marker_entry(node, MARKERS) is not None:
         return True
 
     if _is_mapping(node):
-        return any(contains_lock_ref(value) for value in node.values())
+        return any(contains_marker(value) for value in node.values())
 
     if _is_list(node):
-        return any(contains_lock_ref(item) for item in node)
+        return any(contains_marker(item) for item in node)
 
     return False
 
 
+def resolve_includes(node: Any, root: Path, source: str, ancestors: tuple[Path, ...] = ()) -> Any:
+    entry = _marker_entry(node, INCLUDE_MARKERS)
+    if entry is not None:
+        key, value = entry
+        if not isinstance(value, str):
+            raise RuntimeError(f"{source}: {key} takes a repo-root-relative path string, not {type(value).__name__}")
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"{source}: include path {value!r} must anchor at the repo root")
+        path = root / relative
+        if path in ancestors:
+            raise RuntimeError(f"{source}: include {value!r} participates in a cycle")
+        if not path.is_file():
+            raise RuntimeError(f"{source}: include {value!r} does not exist at the repo root")
+        text = path.read_text(encoding="utf-8")
+        if key == TEXT_MARKER:
+            return text
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError as error:
+            raise RuntimeError(f"{source}: include {value!r} is not valid YAML: {error}") from error
+        if parsed is None:
+            raise RuntimeError(f"{source}: include {value!r} is empty")
+        return resolve_includes(parsed, root, source, (*ancestors, path))
+
+    if _is_mapping(node):
+        return {key: resolve_includes(value, root, source, ancestors) for key, value in node.items()}
+
+    if _is_list(node):
+        return [resolve_includes(item, root, source, ancestors) for item in node]
+
+    return node
+
+
 def resolve_lock_refs(node: Any, images: dict[str, str], source: str) -> Any:
-    entry = _lock_marker_entry(node)
+    entry = _marker_entry(node, LOCK_MARKERS)
     if entry is not None:
         marker, value = entry
         if marker == LOCK_MARKER:
@@ -143,10 +183,10 @@ def _is_list(node: Any) -> TypeIs[list[Any]]:
     return isinstance(node, list)
 
 
-def _lock_marker_entry(node: Any) -> tuple[str, Any] | None:
+def _marker_entry(node: Any, markers: tuple[str, ...]) -> tuple[str, Any] | None:
     if _is_mapping(node) and len(node) == 1:
         key, value = next(iter(node.items()))
-        if key in MARKERS:
+        if key in markers:
             return (key, value)
 
     return None

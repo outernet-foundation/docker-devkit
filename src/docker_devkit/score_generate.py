@@ -19,8 +19,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from .config import ScoreConfig, SecretsConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
-from .includes import contains_include, resolve_includes
-from .locks import contains_lock_ref, load_lock, resolve_lock_refs
+from .markers import contains_marker, load_lock, resolve_includes, resolve_lock_refs
 from .mirror import mirrored_ref
 from .provisioners import compiled_provisioners, dump_compose
 from .secrets import compose_consumed_keys, k8s_consumed_keys, load_declaration, mint_text, validate_consumed
@@ -346,7 +345,7 @@ def resolved_values_path(root: Path, path: Path, values_dir: Path, images: dict[
     # Pass a marker-free values file through untouched; resolve markers into a tempdir copy.
     source = root / path
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
-    if not contains_include(document) and not contains_lock_ref(document):
+    if not contains_marker(document):
         return source.as_posix()
 
     resolved = resolve_lock_refs(resolve_includes(document, root, path.as_posix()), images, path.as_posix())

@@ -9,8 +9,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, field_validator
 
-from .includes import resolve_includes
-from .locks import resolve_lock_refs
+from .markers import resolve_includes, resolve_lock_refs
 
 # Compile these fields from authored mappings into the YAML strings score's Go templates
 # consume; authored manifests stay a real list.
