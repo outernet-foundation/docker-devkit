@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from .config import ScoreConfig, load_config
 from .context_sha import compute_service_shas
 from .documents import parse_bake
+from .includes import contains_include, resolve_includes
 from .mirror import mirrored_ref
 from .provisioners import ComposeDumper, compiled_provisioners
 
@@ -182,7 +183,7 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
 def _generate_compose(root: Path, config: ScoreConfig) -> None:
     score_dir = root / config.score_dir
 
-    with compiled_provisioners(score_dir, config.compose_provisioners) as provisioners:
+    with compiled_provisioners(score_dir, config.compose_provisioners, root) as provisioners:
         _init_state(
             f"score-compose init --project {config.project_name} --no-sample",
             provisioners,
@@ -254,7 +255,7 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
     state_dir.parent.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners) as provisioners:
+    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners, root) as provisioners:
         _init_state(
             "score-k8s init --no-sample",
             provisioners,
@@ -273,12 +274,14 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
                 "charts are org-mirrored; a mirror section with 'prefix' is required in docker-devkit.yaml"
             )
         chart_blocks: list[str] = []
-        for chart in config.charts:
-            reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
-            values = "".join(f" --values {(root / path).as_posix()}" for path in chart.values)
-            namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
-            rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
-            chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
+        with TemporaryDirectory(prefix="resolved-values-") as values_directory:
+            values_dir = Path(values_directory)
+            for chart in config.charts:
+                reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
+                values = "".join(f" --values {resolved_values_path(root, path, values_dir)}" for path in chart.values)
+                namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
+                rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
+                chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
         write_generated_file(
             output_path,
             output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in chart_blocks),
@@ -319,6 +322,31 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
     write_generated_file(output_path, manifest_text)
 
     shutil.rmtree(state_dir, ignore_errors=True)
+
+
+def resolved_values_path(root: Path, path: Path, values_dir: Path) -> str:
+    # helm template --values consumes include-resolved copies written into the per-run tempdir;
+    # a values file with no markers passes through as the committed path, untouched.
+    source = root / path
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not contains_include(document):
+        return source.as_posix()
+
+    resolved = resolve_includes(document, root, path.as_posix())
+    target = values_dir / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_generated_file(
+        target,
+        yaml.dump(
+            resolved,
+            Dumper=ComposeDumper,
+            default_flow_style=False,
+            sort_keys=False,
+            width=1_000_000,
+            allow_unicode=True,
+        ),
+    )
+    return target.as_posix()
 
 
 def ensure_score_tools(config: ScoreConfig, bin_dir: Path, target: Target = "both") -> None:

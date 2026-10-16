@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, field_validator
 
+from .includes import resolve_includes
+
 # The provisioner fields score consumes as Go-template-evaluated YAML strings. Authored files
 # carry them as real mappings (manifests as a real list); this module compiles them to string
 # form so editors highlight and linters parse the authored sources.
@@ -61,7 +63,7 @@ class AuthoredProvisioners(RootModel[list[AuthoredProvisioner]]):
 
 
 @contextmanager
-def compiled_provisioners(source_dir: Path, names: list[str]) -> Generator[list[Path]]:
+def compiled_provisioners(source_dir: Path, names: list[str], root: Path) -> Generator[list[Path]]:
     # Compile the authored files into a per-run tempdir under source_dir: the compiled string
     # form never touches the committed tree, and the --provisioners paths stay POSIX-relative
     # to the repo layout rather than encoding any machine's directory structure.
@@ -73,7 +75,7 @@ def compiled_provisioners(source_dir: Path, names: list[str]) -> Generator[list[
         directory = Path(temporary_directory)
         paths: list[Path] = []
         for name in names:
-            compiled = compile_provisioner_document((source_dir / name).read_text(encoding="utf-8"), name)
+            compiled = compile_provisioner_document((source_dir / name).read_text(encoding="utf-8"), name, root)
             target = directory / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(compiled, encoding="utf-8", newline="")
@@ -81,8 +83,8 @@ def compiled_provisioners(source_dir: Path, names: list[str]) -> Generator[list[
         yield paths
 
 
-def compile_provisioner_document(text: str, source_name: str) -> str:
-    document = yaml.safe_load(text)
+def compile_provisioner_document(text: str, source_name: str, root: Path) -> str:
+    document = resolve_includes(yaml.safe_load(text), root, source_name)
     try:
         authored = AuthoredProvisioners.model_validate(document)
     except ValidationError as error:
