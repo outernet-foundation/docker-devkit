@@ -99,7 +99,7 @@ def compile_provisioner_document(text: str, source_name: str, root: Path, images
         )
 
     # Compile from the raw authored dicts so authored key order controls dump order.
-    return _dump([_compile_entry(entry) for entry in document])
+    return dump_compose([_compile_entry(entry) for entry in document])
 
 
 def _compile_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -107,14 +107,14 @@ def _compile_entry(entry: dict[str, Any]) -> dict[str, Any]:
     for key, value in entry.items():
         if key in STRING_FORM_FIELDS:
             if value is not None:
-                compiled[key] = _dump(value)
+                compiled[key] = dump_compose(value)
         else:
             compiled[key] = value
 
     return compiled
 
 
-def _dump(value: Any) -> str:
+def dump_compose(value: Any) -> str:
     return yaml.dump(
         value,
         Dumper=ComposeDumper,

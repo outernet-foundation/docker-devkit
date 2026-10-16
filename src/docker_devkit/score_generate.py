@@ -22,7 +22,7 @@ from .documents import parse_bake
 from .includes import contains_include, resolve_includes
 from .locks import contains_lock_ref, load_lock, resolve_lock_refs
 from .mirror import mirrored_ref
-from .provisioners import ComposeDumper, compiled_provisioners
+from .provisioners import compiled_provisioners, dump_compose
 from .secrets import compose_consumed_keys, k8s_consumed_keys, load_declaration, mint_text, validate_consumed
 
 # Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
@@ -148,31 +148,21 @@ def cli(
 
 
 def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequirement]:
-    requirements: list[ToolRequirement] = []
+    score_tools: list[tuple[str, str]] = []
     if target in ("both", "compose"):
-        version = config.score_compose_version
-        releases = "https://github.com/score-spec/score-compose/releases"
-        requirements.append(
-            ToolRequirement(
-                binary="score-compose",
-                version=version,
-                release=f"{releases}/tag/{version}",
-                archive=f"{releases}/download/{version}/score-compose_{version}_linux_amd64.tar.gz",
-                extract="score-compose",
-            )
-        )
+        score_tools.append(("score-compose", config.score_compose_version))
     if target in ("both", "k8s"):
-        version = config.score_k8s_version
-        releases = "https://github.com/score-spec/score-k8s/releases"
-        requirements.append(
-            ToolRequirement(
-                binary="score-k8s",
-                version=version,
-                release=f"{releases}/tag/{version}",
-                archive=f"{releases}/download/{version}/score-k8s_{version}_linux_amd64.tar.gz",
-                extract="score-k8s",
-            )
+        score_tools.append(("score-k8s", config.score_k8s_version))
+    requirements = [
+        ToolRequirement(
+            binary=binary,
+            version=version,
+            release=f"https://github.com/score-spec/{binary}/releases/tag/{version}",
+            archive=f"https://github.com/score-spec/{binary}/releases/download/{version}/{binary}_{version}_linux_amd64.tar.gz",
+            extract=binary,
         )
+        for binary, version in score_tools
+    ]
     # Strip one path component for helm, whose archive nests its binary under linux-amd64/.
     if config.charts and target in ("both", "k8s"):
         version = config.helm_version
@@ -239,18 +229,8 @@ def _generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -
 
     if contents:
         document["configs"] = {**(document.get("configs") or {}), **contents}
-        # Dump through ComposeDumper so multiline content lands as literal blocks.
-        write_generated_file(
-            root / config.compose_output,
-            yaml.dump(
-                document,
-                Dumper=ComposeDumper,
-                default_flow_style=False,
-                sort_keys=False,
-                width=1_000_000,
-                allow_unicode=True,
-            ),
-        )
+        # Dump through the compose dumper so multiline content lands as literal blocks.
+        write_generated_file(root / config.compose_output, dump_compose(document))
 
     # The compose state dir is per-run temp; deleting it keeps the next run provisioning from scratch.
     shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
@@ -376,17 +356,7 @@ def resolved_values_path(root: Path, path: Path, values_dir: Path, images: dict[
     resolved = resolve_lock_refs(resolve_includes(document, root, path.as_posix()), images, path.as_posix())
     target = values_dir / path
     target.parent.mkdir(parents=True, exist_ok=True)
-    write_generated_file(
-        target,
-        yaml.dump(
-            resolved,
-            Dumper=ComposeDumper,
-            default_flow_style=False,
-            sort_keys=False,
-            width=1_000_000,
-            allow_unicode=True,
-        ),
-    )
+    write_generated_file(target, dump_compose(resolved))
     return target.as_posix()
 
 

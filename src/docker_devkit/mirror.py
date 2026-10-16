@@ -33,16 +33,14 @@ def mirror() -> None:
     bash(f"curl -fsSLO https://github.com/google/go-containerregistry/releases/download/{CRANE_VERSION}/{archive}")
     bash(f"{sudo}tar -xzf {archive} -C /usr/local/bin crane")
     Path(archive).unlink()
-    for target in targets:
-        destination = mirrored_ref(target.reference, config.prefix)
-        print(f"Mirror {target.reference} -> {destination}")
-        bash(f"crane copy {target.reference} {destination}")
-    for chart in charts:
-        reference = chart.ref.removeprefix("oci://")
+    references = [occurrence.reference for occurrence in targets] + [
+        chart.ref.removeprefix("oci://") for chart in charts
+    ]
+    for reference in references:
         destination = mirrored_ref(reference, config.prefix)
         print(f"Mirror {reference} -> {destination}")
         bash(f"crane copy {reference} {destination}")
-    print(f"Mirrored references: {len(targets) + len(charts)}")
+    print(f"Mirrored references: {len(references)}")
 
 
 def load_mirror_config(root: Path) -> MirrorConfig | None:
