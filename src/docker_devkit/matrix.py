@@ -35,7 +35,18 @@ def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
         explicit = sorted(service for service in group if bake.services[service].build.tags)
         if not explicit:
             continue
-        variant = group_variant(bake, explicit)
+        # Tagless services never become explicit targets (bake rejects a tagless target under
+        # --push) — they ride along as in-invocation dependencies of the group that needs them,
+        # so the variant is decided by the tagged services alone.
+        variants = {
+            next((gpu for gpu in GPU_TYPES if service.endswith(f"-{gpu}")), PLAIN_VARIANT) for service in explicit
+        }
+        if len(variants) > 1:
+            raise RuntimeError(
+                f"dependency group spans gpu variants ({', '.join(sorted(explicit))}) — "
+                "additional_contexts must stay within one device family"
+            )
+        variant = variants.pop()
         memberships = {service in cohort for service in explicit}
         if len(memberships) > 1:
             raise RuntimeError(
@@ -71,32 +82,14 @@ def dependency_groups(bake: BakeDocument) -> list[list[str]]:
             dependency = context.removeprefix(TARGET_CONTEXT_PREFIX)
             if dependency not in bake.services:
                 raise RuntimeError(f"{name} references unknown build target {dependency!r} via additional_contexts")
-            union(parent, find(parent, name), find(parent, dependency))
+            left, right = find(parent, name), find(parent, dependency)
+            if left != right:
+                parent[right] = left
 
     members: dict[str, list[str]] = {}
     for service in bake.services:
         members.setdefault(find(parent, service), []).append(service)
     return sorted(sorted(group) for group in members.values())
-
-
-# Tagless services never become explicit targets (bake rejects a tagless target under
-# --push) — they ride along as in-invocation dependencies of the group that needs them,
-# so the variant is decided by the tagged services alone.
-def group_variant(bake: BakeDocument, explicit: list[str]) -> str:
-    variants = {service_variant(service) for service in explicit}
-    if len(variants) > 1:
-        raise RuntimeError(
-            f"dependency group spans gpu variants ({', '.join(sorted(explicit))}) — "
-            "additional_contexts must stay within one device family"
-        )
-    return variants.pop()
-
-
-def service_variant(service: str) -> str:
-    for gpu in GPU_TYPES:
-        if service.endswith(f"-{gpu}"):
-            return gpu
-    return PLAIN_VARIANT
 
 
 def find(parent: dict[str, str], service: str) -> str:
@@ -106,8 +99,3 @@ def find(parent: dict[str, str], service: str) -> str:
     while parent[service] != service:
         parent[service], service = root, parent[service]
     return root
-
-
-def union(parent: dict[str, str], left: str, right: str) -> None:
-    if left != right:
-        parent[right] = left

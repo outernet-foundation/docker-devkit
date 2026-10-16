@@ -54,10 +54,10 @@ def unpinned_references(root: Path) -> list[str]:
     return [
         occurrence.reference
         for occurrence in stray_references(root)
-        if "/" in (reference := strip_build_args(occurrence.reference))
-        and not BUILD_ARG_PATTERN.search(occurrence.reference)
-        and ":" not in (tail := reference[reference.rfind("/") + 1 :])
-        and "@" not in tail
+        if not BUILD_ARG_PATTERN.search(occurrence.reference)
+        if "/" in (stripped := BUILD_ARG_PATTERN.sub("", occurrence.reference).strip())
+        if ":" not in (tail := stripped[stripped.rfind("/") + 1 :])
+        if "@" not in tail
     ]
 
 
@@ -114,10 +114,6 @@ def resolve_remote_digest(reference: str) -> str:
     if match is None:
         raise RuntimeError(f"Could not parse digest for image reference: {reference}")
     return match.group(1)
-
-
-def strip_build_args(reference: str) -> str:
-    return BUILD_ARG_PATTERN.sub("", reference).strip()
 
 
 def _pyproject_value(root: Path, dotted_key: str) -> str:

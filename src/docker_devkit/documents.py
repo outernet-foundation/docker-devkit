@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 DECLARED_REFERENCE_PATTERN = re.compile(
     r"^(?P<path>[^:@\s$]+)(?::(?P<tag>[^@\s$]+))?(?:@(?P<digest>sha256:[a-f0-9]{64}))?$"
 )
-DIGEST_TAIL_PATTERN = re.compile(r"@sha256:[a-f0-9]{64}$")
 
 
 class BakeBuild(BaseModel):
@@ -47,10 +46,6 @@ class BakeDocument(BaseModel):
             if match is None or not (match.group("tag") or match.group("digest")):
                 raise ValueError(f"x-base-images.{name}: {reference!r} must be 'path:tag' or 'path@digest'")
         return base_images
-
-
-def digest_pinned(reference: str) -> bool:
-    return DIGEST_TAIL_PATTERN.search(reference) is not None
 
 
 def parse_bake(path: Path) -> BakeDocument:

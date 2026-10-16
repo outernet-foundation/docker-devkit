@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from docker_devkit.documents import BakeDocument, digest_pinned
+from docker_devkit.documents import BakeDocument
 
 
 def _bake_with(reference: str) -> BakeDocument:
@@ -47,17 +47,3 @@ class TestBaseImagesValidator:
     def test_should_reject_whitespace(self):
         with pytest.raises(ValidationError):
             _bake_with("ghcr.io/outernet-foundation/mirror/docker.io/library/alpine:3.20 slim")
-
-
-class TestDigestPinned:
-    def test_should_detect_digest_tail(self):
-        assert digest_pinned(f"ghcr.io/org/image:1.0@sha256:{'a' * 64}")
-
-    def test_should_detect_digest_without_tag(self):
-        assert digest_pinned(f"ghcr.io/org/image@sha256:{'a' * 64}")
-
-    def test_should_reject_plain_tag(self):
-        assert not digest_pinned("ghcr.io/org/image:1.0")
-
-    def test_should_reject_partial_digest(self):
-        assert not digest_pinned("ghcr.io/org/image@sha256:abc")

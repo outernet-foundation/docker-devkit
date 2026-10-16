@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ DIGEST_B = "sha256:" + "b" * 64
 BUILD_SHA = "c" * 40
 REPO_ZED = "ghcr.io/outernet-foundation/placeframe-capture-tool/zed-capture"
 REPO_AOA = "ghcr.io/outernet-foundation/placeframe-capture-tool/aoa-bridge"
+
+
+def _shard_key(targets: list[str]) -> str:
+    return hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
 
 
 def _baked(target: str, *, refs: str, digest: str) -> dict[str, dict[str, str]]:
@@ -85,13 +90,13 @@ def test_push_image_digests_pushes_manifest_to_images_digests_all(monkeypatch: p
     assert registry == "ghcr.io/owner/builds"
     assert project == "images-digests"
     assert platform == "all"
-    assert tag == f"sha-{BUILD_SHA}-{build_docker.leg_key(['zed-capture'])}"
+    assert tag == f"sha-{BUILD_SHA}-{_shard_key(['zed-capture'])}"
     assert paths == [DIGEST_FILE_NAME]
     assert recorder.manifests == [
         {"zed-capture": {"ref": REPO_ZED, "digest": DIGEST_A, "tags": ["tree-abc", "latest"]}}
     ]
 
 
-def test_leg_key_is_order_insensitive() -> None:
-    assert build_docker.leg_key(["zed-capture", "aoa-bridge"]) == build_docker.leg_key(["aoa-bridge", "zed-capture"])
-    assert build_docker.leg_key(["zed-capture"]) != build_docker.leg_key(["aoa-bridge"])
+def test_shard_key_is_order_insensitive() -> None:
+    assert _shard_key(["zed-capture", "aoa-bridge"]) == _shard_key(["aoa-bridge", "zed-capture"])
+    assert _shard_key(["zed-capture"]) != _shard_key(["aoa-bridge"])

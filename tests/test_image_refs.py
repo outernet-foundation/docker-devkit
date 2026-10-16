@@ -13,7 +13,6 @@ from docker_devkit.image_refs import (
     declared_references,
     resolve_remote_digest,
     stray_references,
-    strip_build_args,
     unpinned_references,
     version_coupling_violations,
 )
@@ -143,14 +142,6 @@ class TestStrayReferences:
 
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
         assert stray_references(tmp_path) == []
-
-
-class TestStripBuildArgs:
-    def test_should_remove_build_arg_suffixes(self):
-        assert strip_build_args("grafana/alloy:v1.9.0${ALLOY_DIGEST}") == "grafana/alloy:v1.9.0"
-
-    def test_should_return_empty_for_pure_build_arg(self):
-        assert not strip_build_args("${BASE_IMAGE}")
 
 
 class TestUnpinnedReferences:

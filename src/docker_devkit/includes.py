@@ -36,7 +36,10 @@ def resolve_includes(node: Any, root: Path, source: str, ancestors: tuple[Path, 
         key, value = entry
         if not isinstance(value, str):
             raise RuntimeError(f"{source}: {key} takes a repo-root-relative path string, not {type(value).__name__}")
-        path = _resolve_path(value, root, source)
+        relative = Path(value)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"{source}: include path {value!r} must anchor at the repo root")
+        path = root / relative
         if path in ancestors:
             raise RuntimeError(f"{source}: include {value!r} participates in a cycle")
         if not path.is_file():
@@ -76,11 +79,3 @@ def _marker_entry(node: Any) -> tuple[str, Any] | None:
             return (key, value)
 
     return None
-
-
-def _resolve_path(reference: str, root: Path, source: str) -> Path:
-    relative = Path(reference)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise RuntimeError(f"{source}: include path {reference!r} must anchor at the repo root")
-
-    return root / relative

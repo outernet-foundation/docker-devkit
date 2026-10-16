@@ -8,7 +8,6 @@ from docker_devkit.lifecycle import (
     enforce_bake_declaration,
     expand_compose_files,
     load_lifecycle_config,
-    resolve_lock,
     resolve_manifest,
 )
 
@@ -122,11 +121,6 @@ class TestResolveManifest:
 
     def test_returns_none_without_manifest(self, tmp_path: Path):
         assert resolve_manifest(tmp_path) is None
-
-
-class TestResolveLock:
-    def test_pairs_with_the_manifest(self, tmp_path: Path):
-        assert resolve_lock(tmp_path) == tmp_path / "workloads" / "images.lock"
 
 
 class TestEnforceBakeDeclaration:

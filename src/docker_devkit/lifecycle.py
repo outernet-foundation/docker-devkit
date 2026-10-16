@@ -32,10 +32,6 @@ def require_manifest(root: Path) -> Path:
     return manifest
 
 
-def resolve_lock(root: Path) -> Path:
-    return root / LOCK_PATH
-
-
 def enforce_bake_declaration(root: Path, config: LifecycleConfig | None) -> None:
     if config is None and (root / MANIFEST_PATH).exists():
         raise RuntimeError(

@@ -15,11 +15,11 @@ from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
 from .config import MirrorConfig
 from .detect_gpu import GPU_TYPES, Gpu, detect_gpu
-from .documents import BakeDocument, digest_pinned, parse_bake
+from .documents import BakeDocument, parse_bake
 from .context_sha import compute_service_shas
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
-from .lifecycle import require_manifest, resolve_lock
+from .lifecycle import LOCK_PATH, require_manifest
 from .mirror import load_mirror_config, mirrored_ref
 from .modes import parse_env_file
 
@@ -29,6 +29,8 @@ METADATA_PATH = Path("metadata.json")
 DIGEST_PROJECT = "images-digests"
 DIGEST_PLATFORM = "all"
 DIGEST_FILE_NAME = "images-digests.json"
+
+DIGEST_TAIL_PATTERN = re.compile(r"@sha256:[a-f0-9]{64}$")
 
 
 class DigestEntry(TypedDict):
@@ -81,7 +83,7 @@ def run_build(
 ) -> None:
     root = Path.cwd()
     manifest = require_manifest(root)
-    lock_file = resolve_lock(root)
+    lock_file = root / LOCK_PATH
     mirror_config = load_mirror_config(root)
 
     bake = parse_bake(manifest)
@@ -216,16 +218,12 @@ def update_lock_entries(
         raise RuntimeError("x-base-images declared without a mirror section in docker-devkit.yaml")
     for occurrence in bake_base_image_refs(bake):
         lock_base = mirrored_ref(occurrence.reference, mirror_config.prefix)
-        if digest_pinned(occurrence.reference):
+        if DIGEST_TAIL_PATTERN.search(occurrence.reference):
             lock_data[occurrence.name] = lock_base
             continue
         if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
             continue
         lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
-
-
-def leg_key(targets: list[str]) -> str:
-    return hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
 
 
 # Each matrix leg pushes its own manifest shard under sha-{sha}-{key}: legs run in
@@ -239,6 +237,7 @@ def push_image_digests(
 ) -> None:
     install_oras()
     manifest = distill_digest_manifest(baked_images, targets)
+    key = hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
     with TemporaryDirectory(prefix="digest-manifest-") as staging:
         manifest_path = Path(staging) / DIGEST_FILE_NAME
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -246,7 +245,7 @@ def push_image_digests(
             shelf,
             DIGEST_PROJECT,
             DIGEST_PLATFORM,
-            f"sha-{sha}-{leg_key(targets)}",
+            f"sha-{sha}-{key}",
             Path(staging),
             [DIGEST_FILE_NAME],
         )
