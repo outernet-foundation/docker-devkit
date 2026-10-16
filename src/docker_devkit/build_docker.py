@@ -6,12 +6,11 @@ import os
 import platform
 import re
 from pathlib import Path
-from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
 from typing import Annotated, Any, TypedDict
 
 import typer
-from bashrun.bash import bash, bash_output
+from bashrun.bash import bash, bash_check, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
 from .config import MirrorConfig
@@ -276,12 +275,11 @@ def distill_digest_manifest(baked_images: dict[str, Any], targets: list[str]) ->
 
 def _check_gc_limits(min_gb: int = 60):
     candidates = [Path("/etc/docker/daemon.json"), Path(os.path.expanduser("~/.docker/daemon.json"))]
-    if os.getenv("WSL_DISTRO_NAME") is not None:
-        try:
-            win_home = bash_output('wslpath $(cmd.exe /c "echo %UserProfile%" 2>/dev/null)').strip()
-            candidates.append(Path(win_home) / ".docker" / "daemon.json")
-        except CalledProcessError:
-            pass
+    # Probe the Windows-side home through wslpath; failure is expected off WSL.
+    wslpath = 'wslpath $(cmd.exe /c "echo %UserProfile%" 2>/dev/null)'
+    if os.getenv("WSL_DISTRO_NAME") is not None and bash_check(wslpath):
+        win_home = bash_output(wslpath).strip()
+        candidates.append(Path(win_home) / ".docker" / "daemon.json")
 
     config = next((p for p in candidates if p.exists() and os.access(p, os.R_OK)), None)
     if not config:
