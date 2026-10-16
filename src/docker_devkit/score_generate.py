@@ -229,7 +229,6 @@ def _generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -
 
     if contents:
         document["configs"] = {**(document.get("configs") or {}), **contents}
-        # Dump through the compose dumper so multiline content lands as literal blocks.
         write_generated_file(root / config.compose_output, dump_compose(document))
 
     # The compose state dir is per-run temp; deleting it keeps the next run provisioning from scratch.
@@ -239,7 +238,7 @@ def _generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -
 def _generate_k8s(
     root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None, images: dict[str, str]
 ) -> None:
-    # score-k8s writes its state to .score-k8s under its cwd, so run it beside the configured state dir.
+    # Run score-k8s beside the configured state dir; it writes .score-k8s under its cwd.
     state_dir = root / config.k8s_state
     output_path = root / output
     state_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -296,9 +295,7 @@ def _generate_k8s(
         state_text = re.sub(rf"(?m)^(\s*file:\s*).*/{re.escape(name)}$", rf"\g<1>{name}", state_text)
     write_generated_file(state_path, state_text)
 
-    # score-k8s mints a random instance_suffix per workload and stamps it into the manifests;
-    # rewrite it to a name-derived hash so output reproduces from fresh state. The state dir is
-    # per-run temp, so the rmtree leaves nothing behind either way.
+    # Rewrite each random instance_suffix to a name-derived hash so output reproduces from fresh state.
     state = ScoreState.model_validate(yaml.safe_load(state_text) or {})
     manifest_text = output_path.read_text(encoding="utf-8")
     for name, entry in state.workloads.items():
@@ -319,8 +316,8 @@ def _generate_k8s(
 def _enforce_secret_contract(
     root: Path, config: ScoreConfig, target: Target, k8s_output: Path, secrets: SecretsConfig
 ) -> None:
-    # The declaration is the tier-neutral contract; each rendering validates only what this
-    # run generated, and the mint list derives from the declaration alone.
+    # Validate each rendering this run generated against the declaration, and derive the mint
+    # list from the declaration alone.
     declared = load_declaration(root / secrets.file)
     if target in ("both", "compose"):
         artifact = root / config.compose_output
@@ -346,8 +343,7 @@ def _enforce_secret_contract(
 
 
 def resolved_values_path(root: Path, path: Path, values_dir: Path, images: dict[str, str]) -> str:
-    # helm template --values consumes include- and lock-resolved copies written into the per-run
-    # tempdir; a values file with no markers passes through as the committed path, untouched.
+    # Pass a marker-free values file through untouched; resolve markers into a tempdir copy.
     source = root / path
     document = yaml.safe_load(source.read_text(encoding="utf-8"))
     if not contains_include(document) and not contains_lock_ref(document):

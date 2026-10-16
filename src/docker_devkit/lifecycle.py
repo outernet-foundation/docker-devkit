@@ -10,7 +10,7 @@ from .detect_gpu import Gpu
 DEFAULT_COMPOSE_FILE = Path("compose.yml")
 GPU_PLACEHOLDER = "{gpu}"
 
-# The image manifest and its lock are a named pair living in the same directory.
+# Treat the image manifest and its lock as a named pair in the same directory.
 MANIFEST_PATH = Path("workloads/images.yml")
 LOCK_PATH = Path("workloads/images.lock")
 

@@ -21,13 +21,9 @@ def matrix_main() -> None:
     print(json.dumps(compute_matrix_entries(bake)))
 
 
-# One entry per variant and cohort cell: targets are the dependency-closure groups
-# of that cell's explicitly-buildable services, coalesced into a single leg — the
-# shape a single gpu-resolved build invocation would produce, with dependents
-# grouped with the base their additional_contexts `target:` references pull in.
-# The cross-compile cohort gets its own legs: per-arch builds are the QEMU-slow
-# ones, so they parallelize away from native builds instead of serializing them
-# into one invocation.
+# Emit one entry per variant × cohort cell, coalescing each cell's dependency-closure groups
+# into a single leg; give the cross-compile cohort its own legs so QEMU-slow per-arch builds
+# parallelize away from native ones.
 def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
     cohort = cross_compile_cohort(bake)
     entries_by_cell: dict[tuple[str, bool], list[str]] = {}
@@ -35,9 +31,7 @@ def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
         explicit = sorted(service for service in group if bake.services[service].build.tags)
         if not explicit:
             continue
-        # Tagless services never become explicit targets (bake rejects a tagless target under
-        # --push) — they ride along as in-invocation dependencies of the group that needs them,
-        # so the variant is decided by the tagged services alone.
+        # Decide the variant from tagged services alone; tagless services ride as dependencies.
         variants = {
             next((gpu for gpu in GPU_TYPES if service.endswith(f"-{gpu}")), PLAIN_VARIANT) for service in explicit
         }
@@ -61,8 +55,7 @@ def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
     ]
 
 
-# The cross-compile cohort: every service declaring `platforms:` (per-arch
-# treatment is a manifest fact, not an operator judgment) plus the hand-listed
+# Build the cohort from every service declaring `platforms:` plus the hand-listed
 # x-cross-compile-targets members.
 def cross_compile_cohort(bake: BakeDocument) -> set[str]:
     unknown = set(bake.cross_compile_targets) - set(bake.services)

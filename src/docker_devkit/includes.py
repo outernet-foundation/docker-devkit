@@ -5,13 +5,9 @@ from typing import Any, TypeIs
 
 import yaml
 
-# Include markers are single-key mappings so authored sources stay plain-YAML-parseable:
-# "include" inserts the file's bytes verbatim as a string scalar, "include-yaml" parses the
-# file and inserts the structure (charts like grafana's demand mapping-shaped values).
-# Neither mode transforms content — `${VAR}` holes pass through untouched, and templating
-# belongs to score's Go templates, never here. Included content is never scanned for further
-# markers except inside include-yaml trees, where recursion resolves them with cycle
-# detection; text includes are bytes and stay bytes.
+# Resolve single-key include markers: "include" inserts the file's bytes verbatim as a string
+# scalar, "include-yaml" inserts parsed structure. Never transform content; recurse only into
+# include-yaml trees, with cycle detection.
 TEXT_MARKER = "include"
 YAML_MARKER = "include-yaml"
 MARKERS = (TEXT_MARKER, YAML_MARKER)

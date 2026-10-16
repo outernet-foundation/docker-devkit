@@ -12,9 +12,8 @@ from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, field_va
 from .includes import resolve_includes
 from .locks import resolve_lock_refs
 
-# The provisioner fields score consumes as Go-template-evaluated YAML strings. Authored files
-# carry them as real mappings (manifests as a real list); this module compiles them to string
-# form so editors highlight and linters parse the authored sources.
+# Compile these fields from authored mappings into the YAML strings score's Go templates
+# consume; authored manifests stay a real list.
 STRING_FORM_FIELDS = ("state", "outputs", "volumes", "services", "manifests")
 
 
@@ -67,9 +66,8 @@ class AuthoredProvisioners(RootModel[list[AuthoredProvisioner]]):
 def compiled_provisioners(
     source_dir: Path, names: list[str], root: Path, images: dict[str, str]
 ) -> Generator[list[Path]]:
-    # Compile the authored files into a per-run tempdir under source_dir: the compiled string
-    # form never touches the committed tree, and the --provisioners paths stay POSIX-relative
-    # to the repo layout rather than encoding any machine's directory structure.
+    # Compile into a per-run tempdir under source_dir: the string form never touches the
+    # committed tree, and --provisioners paths stay repo-relative.
     if not names:
         yield []
         return

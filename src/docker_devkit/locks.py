@@ -5,10 +5,9 @@ from typing import Any, TypeIs
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-# Lock markers are single-key mappings so authored sources stay plain-YAML-parseable, the
-# same law as include markers: "lock" substitutes the entry's full image reference; "lock-image"
-# expands it into the registry/repository/tag/digest fields chart values want (the standard
-# chart convention joins those fields back into the same reference).
+# Resolve single-key lock markers after includes: "lock" substitutes the entry's full image
+# reference, "lock-image" expands it into the registry/repository/tag/digest fields chart
+# values want.
 LOCK_MARKER = "lock"
 LOCK_IMAGE_MARKER = "lock-image"
 MARKERS = (LOCK_MARKER, LOCK_IMAGE_MARKER)
@@ -122,7 +121,7 @@ def _split_reference(reference: str, digest_field: str, source: str) -> dict[str
         fields["registry"], fields["repository"] = _split_path(path_part, reference, source)
 
     if digest_field == "sha":
-        # The grafana chart family names the field "sha" and re-adds the sha256: prefix in its template.
+        # Spell the digest bare; the grafana chart template re-adds the sha256: prefix.
         fields["sha"] = digest.removeprefix("sha256:")
     else:
         fields["digest"] = digest

@@ -87,7 +87,7 @@ def down(
 ) -> None:
     root = Path.cwd()
     # Always layer the dev overlay so a prior --dev bring-up tears down too
-    _, _, compose_prefix = _compose_invocation(root, gpu, include_dev=True, require_dev=False)
+    _, compose_prefix = _compose_invocation(root, gpu, include_dev=True, require_dev=False)
     # Activate every declared profile so teardown covers prior bring-ups under a different selection
     profile_flags = "".join(f"--profile {profile} " for profile in enumerate_profiles(compose_prefix))
     command = f"{compose_prefix} {profile_flags}down --remove-orphans"
@@ -98,8 +98,8 @@ def down(
 
 
 def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev: bool) -> tuple[Path | None, str]:
-    # Shared preamble for both verbs: enforce the declaration, refuse a missing .env or
-    # image lock, resolve the gpu, inject tree-sha tags, and assemble the compose command prefix.
+    # Run the shared preamble: enforce the declaration, refuse a missing .env or image lock,
+    # resolve the gpu, inject tree-sha tags, and assemble the compose command prefix.
     config = load_lifecycle_config(root)
     enforce_bake_declaration(root, config)
     manifest = resolve_manifest(root)

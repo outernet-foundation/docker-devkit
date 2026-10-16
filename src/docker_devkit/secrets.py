@@ -7,14 +7,12 @@ from typing import Any, TypeIs
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-# The declaration is tier-neutral: every key either rendering consumes appears here, so the
-# two artifacts and the deploy-time mint list cannot drift apart. Keys marked mint ride the
-# externally managed k8s Secret; the rest are compose runtime knobs (.env, image lock) that
-# no k8s Secret carries.
+# Validate both renderings' consumed keys against the declaration: every key either rendering
+# consumes appears here, and mint keys ride the externally managed k8s Secret.
 DECLARED_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
-# Compose interpolation: a brace hole preceded by an odd number of dollars is consumed; even
-# runs are $$-escaped literals (the converter's doubling inside configs.content).
+# Count a brace hole as consumed when an odd number of dollars precedes it; even runs are
+# $$-escaped literals.
 COMPOSE_HOLE = re.compile(r"(\$+)\{([A-Z][A-Z0-9_]*)(?::[^{}]*)?\}")
 
 
