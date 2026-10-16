@@ -12,7 +12,6 @@ from bashrun.bash import bash_output
 from pydantic import RootModel
 
 from .documents import BakeDocument, parse_bake
-from .lifecycle import MANIFEST_PATH
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
@@ -51,31 +50,11 @@ class VersionCoupling:
 
 
 def unpinned_references(root: Path) -> list[str]:
-    return [
-        occurrence.reference
-        for occurrence in stray_references(root)
-        if not BUILD_ARG_PATTERN.search(occurrence.reference)
-        if "/" in (stripped := BUILD_ARG_PATTERN.sub("", occurrence.reference).strip())
-        if ":" not in (tail := stripped[stripped.rfind("/") + 1 :])
-        if "@" not in tail
-    ]
-
-
-def declared_references(root: Path) -> list[ImageReference]:
-    manifest = root / MANIFEST_PATH
-    if not manifest.exists():
-        return []
-    return bake_base_image_refs(parse_bake(manifest))
-
-
-def stray_references(
-    root: Path,
-    dockerfile_globs: tuple[str, ...] = ("workloads/*/Dockerfile*", "docker/*/Dockerfile*"),
-    image_globs: tuple[str, ...] = ("stack/score/**/*.yaml", "score/**/*.yaml"),
-) -> list[ImageReference]:
+    dockerfile_globs = ("workloads/*/Dockerfile*", "docker/*/Dockerfile*")
+    image_globs = ("stack/score/**/*.yaml", "score/**/*.yaml")
     dockerfile_paths = [path for dockerfile_glob in dockerfile_globs for path in sorted(root.glob(dockerfile_glob))]
     image_paths = [path for image_glob in image_globs for path in sorted(root.glob(image_glob))]
-    return (
+    strays = (
         [
             ImageReference("", match.group(1))
             for path in dockerfile_paths
@@ -93,18 +72,50 @@ def stray_references(
             for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
     )
+    return [
+        occurrence.reference
+        for occurrence in strays
+        if not BUILD_ARG_PATTERN.search(occurrence.reference)
+        if "/" in (stripped := BUILD_ARG_PATTERN.sub("", occurrence.reference).strip())
+        if ":" not in (tail := stripped[stripped.rfind("/") + 1 :])
+        if "@" not in tail
+    ]
 
 
 def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) -> list[str]:
-    return [
-        f"{coupling.name}: {site.description} at {path}: expected {expected}, found {found}"
-        for coupling in couplings
-        for expected in [re.sub(r"^[^0-9]+", "", _pyproject_value(root, coupling.pyproject_key)).split(",")[0].strip()]
-        for site in coupling.sites
-        for path in sorted(root.glob(site.glob)) or [Path(site.glob)]
-        for found in [_site_version(path, site)]
-        if found != expected
-    ]
+    violations: list[str] = []
+    for coupling in couplings:
+        value = TomlDocument.model_validate(tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))).root
+        for component in coupling.pyproject_key.split("."):
+            if not isinstance(value, dict) or component not in value:
+                raise RuntimeError(f"pyproject key {coupling.pyproject_key} is missing or non-table at {component}")
+            value = value[component]
+        if not isinstance(value, str):
+            raise TypeError(f"pyproject key {coupling.pyproject_key} is not a string")
+        expected = re.sub(r"^[^0-9]+", "", value).split(",")[0].strip()
+        for site in coupling.sites:
+            for path in sorted(root.glob(site.glob)) or [Path(site.glob)]:
+                if not path.exists():
+                    found = MISSING_VERSION
+                else:
+                    if site.base_image:
+                        haystack = next(
+                            (
+                                reference.reference
+                                for reference in bake_base_image_refs(parse_bake(path))
+                                if reference.name == site.base_image
+                            ),
+                            "",
+                        )
+                    else:
+                        haystack = path.read_text(encoding="utf-8")
+                    match = re.search(site.pattern, haystack)
+                    found = match.group(1) if match else MISSING_VERSION
+                if found != expected:
+                    violations.append(
+                        f"{coupling.name}: {site.description} at {path}: expected {expected}, found {found}"
+                    )
+    return violations
 
 
 def resolve_remote_digest(reference: str) -> str:
@@ -114,35 +125,6 @@ def resolve_remote_digest(reference: str) -> str:
     if match is None:
         raise RuntimeError(f"Could not parse digest for image reference: {reference}")
     return match.group(1)
-
-
-def _pyproject_value(root: Path, dotted_key: str) -> str:
-    value = TomlDocument.model_validate(tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))).root
-    for component in dotted_key.split("."):
-        if not isinstance(value, dict) or component not in value:
-            raise RuntimeError(f"pyproject key {dotted_key} is missing or non-table at {component}")
-        value = value[component]
-    if not isinstance(value, str):
-        raise TypeError(f"pyproject key {dotted_key} is not a string")
-    return value
-
-
-def _site_version(path: Path, site: VersionSite) -> str:
-    if not path.exists():
-        return MISSING_VERSION
-    if site.base_image:
-        haystack = next(
-            (
-                reference.reference
-                for reference in bake_base_image_refs(parse_bake(path))
-                if reference.name == site.base_image
-            ),
-            "",
-        )
-    else:
-        haystack = path.read_text(encoding="utf-8")
-    match = re.search(site.pattern, haystack)
-    return match.group(1) if match else MISSING_VERSION
 
 
 def bake_base_image_refs(document: BakeDocument) -> list[ImageReference]:

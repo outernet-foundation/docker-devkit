@@ -34,30 +34,6 @@ class LockImageSpec(BaseModel):
         return value
 
 
-def load_lock(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        raise RuntimeError(f"{path.as_posix()}: the image lock is required for generation (build writes it)")
-    return parse_lock(path.read_text(encoding="utf-8"), path.as_posix())
-
-
-def parse_lock(text: str, source: str) -> dict[str, str]:
-    images: dict[str, str] = {}
-    for number, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        name, separator, reference = stripped.partition("=")
-        if not separator or not name.strip() or not reference.strip():
-            raise RuntimeError(f"{source}:{number}: lock lines are NAME=reference entries")
-        if name in images:
-            raise RuntimeError(f"{source}:{number}: duplicate lock entry {name}")
-        images[name] = reference
-
-    if not images:
-        raise RuntimeError(f"{source}: the image lock carries no entries")
-    return images
-
-
 def contains_marker(node: Any) -> bool:
     if _marker_entry(node, MARKERS) is not None:
         return True
@@ -119,7 +95,27 @@ def resolve_lock_refs(node: Any, images: dict[str, str], source: str) -> Any:
         image_spec = _image_spec(value, source)
         if image_spec.key not in images:
             raise RuntimeError(f"{source}: lock entry {image_spec.key!r} does not exist in the image lock")
-        return _split_reference(images[image_spec.key], image_spec.digest_field, source)
+        reference = images[image_spec.key]
+        path_part, separator, digest = reference.rpartition("@")
+        if not separator or not digest.startswith("sha256:"):
+            raise RuntimeError(
+                f"{source}: lock reference {reference!r} is not digest-pinned and cannot split into chart image fields"
+            )
+
+        fields: dict[str, str] = {}
+        tagged = path_part.rpartition(":")
+        if tagged[1] and "/" not in tagged[2]:
+            fields["registry"], fields["repository"] = _split_path(tagged[0], reference, source)
+            fields["tag"] = tagged[2]
+        else:
+            fields["registry"], fields["repository"] = _split_path(path_part, reference, source)
+
+        if image_spec.digest_field == "sha":
+            # Spell the digest bare; the grafana chart template re-adds the sha256: prefix.
+            fields["sha"] = digest.removeprefix("sha256:")
+        else:
+            fields["digest"] = digest
+        return fields
 
     if _is_mapping(node):
         return {key: resolve_lock_refs(value, images, source) for key, value in node.items()}
@@ -143,29 +139,6 @@ def _image_spec(value: Any, source: str) -> LockImageSpec:
     raise RuntimeError(
         f"{source}: lock-image takes a lock-entry name or a key/digest_field mapping, not {type(value).__name__}"
     )
-
-
-def _split_reference(reference: str, digest_field: str, source: str) -> dict[str, str]:
-    path_part, separator, digest = reference.rpartition("@")
-    if not separator or not digest.startswith("sha256:"):
-        raise RuntimeError(
-            f"{source}: lock reference {reference!r} is not digest-pinned and cannot split into chart image fields"
-        )
-
-    fields: dict[str, str] = {}
-    tagged = path_part.rpartition(":")
-    if tagged[1] and "/" not in tagged[2]:
-        fields["registry"], fields["repository"] = _split_path(tagged[0], reference, source)
-        fields["tag"] = tagged[2]
-    else:
-        fields["registry"], fields["repository"] = _split_path(path_part, reference, source)
-
-    if digest_field == "sha":
-        # Spell the digest bare; the grafana chart template re-adds the sha256: prefix.
-        fields["sha"] = digest.removeprefix("sha256:")
-    else:
-        fields["digest"] = digest
-    return fields
 
 
 def _split_path(path: str, reference: str, source: str) -> tuple[str, str]:

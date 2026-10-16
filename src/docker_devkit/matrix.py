@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from .documents import BakeDocument, parse_bake
+from .documents import parse_bake
 from .lifecycle import GPU_TYPES, require_manifest
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
@@ -17,16 +17,38 @@ PLAIN_VARIANT = "common"
 @app.command()
 def matrix_main() -> None:
     bake = parse_bake(require_manifest(Path.cwd()))
-    print(json.dumps(compute_matrix_entries(bake)))
 
+    # Build the cohort from every service declaring `platforms:` plus the hand-listed
+    # x-cross-compile-targets members.
+    unknown = set(bake.cross_compile_targets) - set(bake.services)
+    if unknown:
+        raise RuntimeError(f"x-cross-compile-targets names unknown services: {', '.join(sorted(unknown))}")
+    pinned = {service for service, config in bake.services.items() if config.build.platforms}
+    cohort = pinned | set(bake.cross_compile_targets)
 
-# Emit one entry per variant × cohort cell, coalescing each cell's dependency-closure groups
-# into a single leg; give the cross-compile cohort its own legs so QEMU-slow per-arch builds
-# parallelize away from native ones.
-def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
-    cohort = cross_compile_cohort(bake)
+    # Group services into dependency closures over additional_contexts target: references.
+    parent = {service: service for service in bake.services}
+
+    for name, service in bake.services.items():
+        for context in service.build.additional_contexts.values():
+            if not context.startswith(TARGET_CONTEXT_PREFIX):
+                continue
+            dependency = context.removeprefix(TARGET_CONTEXT_PREFIX)
+            if dependency not in bake.services:
+                raise RuntimeError(f"{name} references unknown build target {dependency!r} via additional_contexts")
+            left, right = find(parent, name), find(parent, dependency)
+            if left != right:
+                parent[right] = left
+
+    members: dict[str, list[str]] = {}
+    for service in bake.services:
+        members.setdefault(find(parent, service), []).append(service)
+
+    # Emit one entry per variant × cohort cell, coalescing each cell's dependency-closure groups
+    # into a single leg; give the cross-compile cohort its own legs so QEMU-slow per-arch builds
+    # parallelize away from native ones.
     entries_by_cell: dict[tuple[str, bool], list[str]] = {}
-    for group in dependency_groups(bake):
+    for group in sorted(sorted(member_list) for member_list in members.values()):
         explicit = sorted(service for service in group if bake.services[service].build.tags)
         if not explicit:
             continue
@@ -48,40 +70,12 @@ def compute_matrix_entries(bake: BakeDocument) -> list[dict[str, str]]:
             )
         entries_by_cell.setdefault((variant, memberships.pop()), []).extend(explicit)
 
-    return [
-        {"targets": " ".join(sorted(targets)), "variant": variant}
-        for (variant, _), targets in sorted(entries_by_cell.items())
-    ]
-
-
-# Build the cohort from every service declaring `platforms:` plus the hand-listed
-# x-cross-compile-targets members.
-def cross_compile_cohort(bake: BakeDocument) -> set[str]:
-    unknown = set(bake.cross_compile_targets) - set(bake.services)
-    if unknown:
-        raise RuntimeError(f"x-cross-compile-targets names unknown services: {', '.join(sorted(unknown))}")
-    pinned = {service for service, config in bake.services.items() if config.build.platforms}
-    return pinned | set(bake.cross_compile_targets)
-
-
-def dependency_groups(bake: BakeDocument) -> list[list[str]]:
-    parent = {service: service for service in bake.services}
-
-    for name, service in bake.services.items():
-        for context in service.build.additional_contexts.values():
-            if not context.startswith(TARGET_CONTEXT_PREFIX):
-                continue
-            dependency = context.removeprefix(TARGET_CONTEXT_PREFIX)
-            if dependency not in bake.services:
-                raise RuntimeError(f"{name} references unknown build target {dependency!r} via additional_contexts")
-            left, right = find(parent, name), find(parent, dependency)
-            if left != right:
-                parent[right] = left
-
-    members: dict[str, list[str]] = {}
-    for service in bake.services:
-        members.setdefault(find(parent, service), []).append(service)
-    return sorted(sorted(group) for group in members.values())
+    print(
+        json.dumps([
+            {"targets": " ".join(sorted(targets)), "variant": variant}
+            for (variant, _), targets in sorted(entries_by_cell.items())
+        ])
+    )
 
 
 def find(parent: dict[str, str], service: str) -> str:

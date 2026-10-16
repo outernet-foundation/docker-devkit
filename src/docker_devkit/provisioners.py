@@ -75,40 +75,37 @@ def compiled_provisioners(
         directory = Path(temporary_directory)
         paths: list[Path] = []
         for name in names:
-            compiled = compile_provisioner_document((source_dir / name).read_text(encoding="utf-8"), name, root, images)
+            document = resolve_lock_refs(
+                resolve_includes(yaml.safe_load((source_dir / name).read_text(encoding="utf-8")), root, name),
+                images,
+                name,
+            )
+            try:
+                authored = AuthoredProvisioners.model_validate(document)
+            except ValidationError as error:
+                raise RuntimeError(f"{name}: authored provisioner rejected: {error}") from error
+
+            if not authored.root:
+                raise RuntimeError(
+                    f"{name}: an authored provisioner file is a non-empty YAML list of provisioner entries"
+                )
+
+            # Compile from the raw authored dicts so authored key order controls dump order.
+            compiled_entries: list[dict[str, Any]] = []
+            for entry in document:
+                compiled: dict[str, Any] = {}
+                for key, value in entry.items():
+                    if key in STRING_FORM_FIELDS:
+                        if value is not None:
+                            compiled[key] = dump_compose(value)
+                    else:
+                        compiled[key] = value
+                compiled_entries.append(compiled)
             target = directory / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(compiled, encoding="utf-8", newline="")
+            target.write_text(dump_compose(compiled_entries), encoding="utf-8", newline="")
             paths.append(target)
         yield paths
-
-
-def compile_provisioner_document(text: str, source_name: str, root: Path, images: dict[str, str]) -> str:
-    document = resolve_lock_refs(resolve_includes(yaml.safe_load(text), root, source_name), images, source_name)
-    try:
-        authored = AuthoredProvisioners.model_validate(document)
-    except ValidationError as error:
-        raise RuntimeError(f"{source_name}: authored provisioner rejected: {error}") from error
-
-    if not authored.root:
-        raise RuntimeError(
-            f"{source_name}: an authored provisioner file is a non-empty YAML list of provisioner entries"
-        )
-
-    # Compile from the raw authored dicts so authored key order controls dump order.
-    return dump_compose([_compile_entry(entry) for entry in document])
-
-
-def _compile_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    compiled: dict[str, Any] = {}
-    for key, value in entry.items():
-        if key in STRING_FORM_FIELDS:
-            if value is not None:
-                compiled[key] = dump_compose(value)
-        else:
-            compiled[key] = value
-
-    return compiled
 
 
 def dump_compose(value: Any) -> str:

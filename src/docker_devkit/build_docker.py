@@ -13,8 +13,7 @@ import typer
 from bashrun.bash import bash, bash_check, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
-from .config import MirrorConfig
-from .documents import BakeDocument, compute_service_shas, parse_bake
+from .documents import compute_service_shas, parse_bake
 
 from .image_refs import bake_base_image_refs, resolve_remote_digest
 from .lifecycle import GPU_TYPES, LOCK_PATH, Gpu, detect_gpu, parse_env_file, require_manifest
@@ -106,7 +105,19 @@ def run_build(
     if gpu == "auto" and not lock_only:
         gpu = detect_gpu()
 
-    update_lock_entries(bake, mirror_config, lock_data, upgrade=upgrade)
+    # Record one lock entry per declaration: the mirror-prefixed reference, digest resolved
+    # against upstream — crane copies are byte-identical, so the digest holds under both names.
+    if bake.base_images:
+        if mirror_config is None:
+            raise RuntimeError("x-base-images declared without a mirror section in docker-devkit.yaml")
+        for occurrence in bake_base_image_refs(bake):
+            lock_base = mirrored_ref(occurrence.reference, mirror_config.prefix)
+            if DIGEST_TAIL_PATTERN.search(occurrence.reference):
+                lock_data[occurrence.name] = lock_base
+                continue
+            if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
+                continue
+            lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
 
     lock_file.write_text(
         "\n".join(f"{key}={value}" for key, value in sorted(lock_data.items())) + "\n",
@@ -126,7 +137,24 @@ def run_build(
             raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(bake.services)}")
         targets = [t for t in bake.services if t in set(targets_opt)]
     else:
-        targets = compute_default_targets(bake, gpu, gpu_only)
+        # Keep cross-compile targets out of the default list (per-arch treatment; opt in via
+        # --targets) and tagless services too — bake rejects a tagless target under --push, so
+        # they ride as in-invocation dependencies.
+        cross_compile_targets: set[str] = set(bake.cross_compile_targets)
+        tagged_services = [service for service, config in bake.services.items() if config.build.tags]
+        if gpu_only:
+            targets = [
+                service
+                for service in tagged_services
+                if service.endswith(f"-{gpu}") and service not in cross_compile_targets
+            ]
+        else:
+            targets = [
+                service
+                for service in tagged_services
+                if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
+                and service not in cross_compile_targets
+            ]
 
     if push:
         for target in targets:
@@ -175,81 +203,44 @@ def run_build(
         raise RuntimeError("Bake output does not cover the requested targets")
 
     # Shelve the digest manifest under the REGISTRY shelf, tagged with the checkout HEAD.
+    # Push one shard per leg under sha-{sha}-{key}; parallel legs would last-writer-win a
+    # shared tag, and the pull side merges a SHA's shards after every leg finishes.
     if push:
         registry = os.environ.get("REGISTRY", "")
         if not registry:
             raise SystemExit("REGISTRY not set — --push shelves the digest manifest under it")
         shelf = f"{registry}/builds"
         sha = bash_output("git rev-parse HEAD").strip()
-        push_image_digests(shelf, sha, baked_images, targets)
-
-
-# Record one entry per declaration: the mirror-prefixed reference, digest resolved against
-# upstream — crane copies are byte-identical, so the digest holds under both names.
-def update_lock_entries(
-    bake: BakeDocument,
-    mirror_config: MirrorConfig | None,
-    lock_data: dict[str, str],
-    *,
-    upgrade: bool,
-) -> None:
-    if not bake.base_images:
-        return
-    if mirror_config is None:
-        raise RuntimeError("x-base-images declared without a mirror section in docker-devkit.yaml")
-    for occurrence in bake_base_image_refs(bake):
-        lock_base = mirrored_ref(occurrence.reference, mirror_config.prefix)
-        if DIGEST_TAIL_PATTERN.search(occurrence.reference):
-            lock_data[occurrence.name] = lock_base
-            continue
-        if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
-            continue
-        lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
-
-
-# Push one shard per leg under sha-{sha}-{key}; parallel legs would last-writer-win a shared
-# tag, and the pull side merges a SHA's shards after every leg finishes.
-def push_image_digests(
-    shelf: str,
-    sha: str,
-    baked_images: dict[str, Any],
-    targets: list[str],
-) -> None:
-    install_oras()
-    manifest = distill_digest_manifest(baked_images, targets)
-    key = hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
-    with TemporaryDirectory(prefix="digest-manifest-") as staging:
-        manifest_path = Path(staging) / DIGEST_FILE_NAME
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        push_build(
-            shelf,
-            DIGEST_PROJECT,
-            DIGEST_PLATFORM,
-            f"sha-{sha}-{key}",
-            Path(staging),
-            [DIGEST_FILE_NAME],
-        )
-
-
-def distill_digest_manifest(baked_images: dict[str, Any], targets: list[str]) -> dict[str, DigestEntry]:
-    manifest: dict[str, DigestEntry] = {}
-    for target in targets:
-        entry = baked_images[target]
-        image_name = entry["image.name"]
-        digest = entry["containerimage.digest"]
-        refs = [reference.strip() for reference in image_name.split(",") if reference.strip()]
-        image_ref = ""
-        tags: list[str] = []
-        for reference in refs:
-            reference = reference.split("@", 1)[0]
-            repository, separator, tag = reference.rpartition(":")
-            if separator:
-                image_ref = repository
-                tags.append(tag)
-        if not tags:
-            raise ValueError(f"target '{target}' produced no tagged image references from '{image_name}'")
-        manifest[target] = {"ref": image_ref, "digest": digest, "tags": tags}
-    return manifest
+        install_oras()
+        digest_manifest: dict[str, DigestEntry] = {}
+        for target in targets:
+            entry = baked_images[target]
+            image_name = entry["image.name"]
+            digest = entry["containerimage.digest"]
+            refs = [reference.strip() for reference in image_name.split(",") if reference.strip()]
+            image_ref = ""
+            tags: list[str] = []
+            for reference in refs:
+                reference = reference.split("@", 1)[0]
+                repository, separator, tag = reference.rpartition(":")
+                if separator:
+                    image_ref = repository
+                    tags.append(tag)
+            if not tags:
+                raise ValueError(f"target '{target}' produced no tagged image references from '{image_name}'")
+            digest_manifest[target] = {"ref": image_ref, "digest": digest, "tags": tags}
+        key = hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
+        with TemporaryDirectory(prefix="digest-manifest-") as staging:
+            manifest_path = Path(staging) / DIGEST_FILE_NAME
+            manifest_path.write_text(json.dumps(digest_manifest, indent=2), encoding="utf-8")
+            push_build(
+                shelf,
+                DIGEST_PROJECT,
+                DIGEST_PLATFORM,
+                f"sha-{sha}-{key}",
+                Path(staging),
+                [DIGEST_FILE_NAME],
+            )
 
 
 def _check_gc_limits(min_gb: int = 60):
@@ -283,23 +274,3 @@ def _check_gc_limits(min_gb: int = 60):
         raise RuntimeError(f"Docker GC limit {val:.1f}GB in {config} is below the required {min_gb}GB")
 
     print(f"    [OK] Docker GC Limit verified: {val:.1f}GB")
-
-
-# Keep cross-compile targets out of the default list (per-arch treatment; opt in via
-# --targets) and tagless services too — bake rejects a tagless target under --push, so
-# they ride as in-invocation dependencies.
-def compute_default_targets(bake: BakeDocument, gpu: Gpu, gpu_only: bool = False) -> list[str]:
-    cross_compile_targets: set[str] = set(bake.cross_compile_targets)
-    tagged_services = [service for service, config in bake.services.items() if config.build.tags]
-    if gpu_only:
-        return [
-            service
-            for service in tagged_services
-            if service.endswith(f"-{gpu}") and service not in cross_compile_targets
-        ]
-    return [
-        service
-        for service in tagged_services
-        if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
-        and service not in cross_compile_targets
-    ]

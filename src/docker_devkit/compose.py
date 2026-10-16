@@ -1,25 +1,27 @@
 import os
+import shlex
+from os import environ
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from bashrun.bash import bash_handoff
+from bashrun.bash import bash_check, bash_handoff
 
 from .build_docker import run_build
+from .config import load_config
 from .documents import compute_service_shas, parse_bake
 from .lifecycle import (
-    LOCK_PATH,
+    DEFAULT_COMPOSE_FILE,
+    GPU_PLACEHOLDER,
     Gpu,
+    LOCK_PATH,
+    MANIFEST_PATH,
     detect_gpu,
-    enforce_bake_declaration,
     enumerate_profiles,
-    expand_compose_files,
-    load_lifecycle_config,
     parse_env_file,
-    resolve_compose_profiles,
     resolve_manifest,
 )
-from .mirror import enforce_mirrored, load_mirror_config
+from .mirror import load_mirror_config
 
 ENV_FILE = Path(".env")
 
@@ -53,13 +55,29 @@ def up(
         raise typer.BadParameter("--build requires an image manifest (workloads/images.yml)")
 
     if load_mirror_config(root) is not None:
-        enforce_mirrored(parse_env_file(root / LOCK_PATH))
+        # Fail closed over every lock entry: a missing mirror image means the declaring change
+        # has not been through CI's mirror job yet, and there is no escape flag.
+        for value in sorted(parse_env_file(root / LOCK_PATH).values()):
+            if bash_check(f"docker buildx imagetools inspect {shlex.quote(value)}"):
+                continue
+            reference, _, digest = value.rpartition("@")
+            raise RuntimeError(
+                f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
+                "the CI mirror job populates it when the declaring change runs"
+            )
 
     if build:
         run_build(gpu=gpu)
 
-    # compose ignores COMPOSE_PROFILES whenever a --profile flag is present, so forward the selection explicitly
-    profiles = resolve_compose_profiles(ENV_FILE)
+    # compose ignores COMPOSE_PROFILES whenever a --profile flag is present, so forward the
+    # selection explicitly; shell env wins over .env, comma-split and deduplicated.
+    file_values = parse_env_file(ENV_FILE)
+    raw_profiles = environ.get("COMPOSE_PROFILES") or file_values.get("COMPOSE_PROFILES", "")
+    profiles: list[str] = []
+    for entry in raw_profiles.split(","):
+        profile = entry.strip()
+        if profile and profile not in profiles:
+            profiles.append(profile)
     if profiles:
         defined = enumerate_profiles(compose_prefix)
         unknown = [profile for profile in profiles if profile not in defined]
@@ -101,12 +119,16 @@ def down(
 def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev: bool) -> tuple[Path | None, str]:
     # Run the shared preamble: enforce the declaration, refuse a missing .env or image lock,
     # resolve the gpu, inject tree-sha tags, and assemble the compose command prefix.
-    config = load_lifecycle_config(root)
-    enforce_bake_declaration(root, config)
+    devkit = load_config(root)
+    lifecycle_config = devkit.lifecycle if devkit is not None else None
+    if lifecycle_config is None and (root / MANIFEST_PATH).exists():
+        raise RuntimeError(
+            "image manifest present without a lifecycle section in docker-devkit.yaml; declare the section"
+        )
     manifest = resolve_manifest(root)
     lock_file = root / LOCK_PATH
 
-    if require_dev and (config is None or config.dev_file is None):
+    if require_dev and (lifecycle_config is None or lifecycle_config.dev_file is None):
         raise RuntimeError("--dev requires a dev_file in the lifecycle section of docker-devkit.yaml")
 
     if not ENV_FILE.exists():
@@ -123,7 +145,16 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
     if manifest is not None:
         os.environ.update(compute_service_shas(root, parse_bake(manifest)))
 
-    compose_files = expand_compose_files(config, gpu, include_dev=include_dev)
+    if lifecycle_config is None:
+        compose_files = [DEFAULT_COMPOSE_FILE]
+    else:
+        compose_files = [
+            Path(entry.format(gpu=gpu))
+            for entry in lifecycle_config.files
+            if gpu != "none" or GPU_PLACEHOLDER not in entry
+        ]
+        if include_dev and lifecycle_config.dev_file is not None:
+            compose_files.append(Path(lifecycle_config.dev_file))
     if not compose_files:
         raise RuntimeError("No compose files declared; a builds-only repo has no stack")
 

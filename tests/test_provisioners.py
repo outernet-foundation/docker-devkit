@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from docker_devkit.provisioners import (
     AuthoredProvisioner,
     compiled_provisioners,
-    compile_provisioner_document,
 )
 
 COMPOSE_ENTRY = """
@@ -63,9 +62,12 @@ def parse_entries(text: str) -> Any:
     return yaml.safe_load(text)
 
 
-def compile_entry(text: str, name: str) -> str:
-    # These entries carry no include markers, so the root is never consulted.
-    return compile_provisioner_document(text, name, Path(), {})
+def compile_entry(text: str, name: str, tmp_path: Path, images: dict[str, str] | None = None) -> str:
+    source = tmp_path / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(text, encoding="utf-8")
+    with compiled_provisioners(tmp_path, [name], tmp_path, images or {}) as paths:
+        return paths[0].read_text(encoding="utf-8")
 
 
 def test_uri_and_type_are_required() -> None:
@@ -112,8 +114,8 @@ def test_string_form_manifests_names_the_list_shape() -> None:
         })
 
 
-def test_compile_stringifies_every_mapping_field() -> None:
-    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml"))
+def test_compile_stringifies_every_mapping_field(tmp_path: Path) -> None:
+    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml", tmp_path))
 
     assert len(compiled) == 1
     entry = compiled[0]
@@ -121,24 +123,24 @@ def test_compile_stringifies_every_mapping_field() -> None:
         assert isinstance(entry[field], str), field
 
 
-def test_compiled_fields_round_trip_to_the_authored_mappings() -> None:
+def test_compiled_fields_round_trip_to_the_authored_mappings(tmp_path: Path) -> None:
     authored = parse_entries(COMPOSE_ENTRY)[0]
-    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml"))[0]
+    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml", tmp_path))[0]
 
     for field in ("state", "outputs", "volumes", "services"):
         assert yaml.safe_load(compiled[field]) == authored[field]
 
 
-def test_templates_and_env_holes_survive_verbatim() -> None:
-    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml"))[0]
+def test_templates_and_env_holes_survive_verbatim(tmp_path: Path) -> None:
+    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml", tmp_path))[0]
 
     assert "{{ .State.serviceName }}" in compiled["services"]
     assert "password: ${DB_PASSWORD:?err}" in compiled["outputs"]
     assert 'example/db:{{ env "DB_SHA" }}' in compiled["services"]
 
 
-def test_scalar_kinds_round_trip() -> None:
-    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml"))[0]
+def test_scalar_kinds_round_trip(tmp_path: Path) -> None:
+    compiled = parse_entries(compile_entry(COMPOSE_ENTRY, "database.yaml", tmp_path))[0]
 
     state = yaml.safe_load(compiled["state"])
     assert state["port"] == 5432
@@ -149,7 +151,7 @@ def test_scalar_kinds_round_trip() -> None:
     assert environment["MODE"] == "strict"
 
 
-def test_authored_key_order_controls_dump_order() -> None:
+def test_authored_key_order_controls_dump_order(tmp_path: Path) -> None:
     authored = """
 - uri: template://example/x
   type: example-x
@@ -160,7 +162,7 @@ def test_authored_key_order_controls_dump_order() -> None:
     later: b
     earlier: a
 """
-    compiled = compile_entry(authored, "x.yaml")
+    compiled = compile_entry(authored, "x.yaml", tmp_path)
     entry = parse_entries(compiled)[0]
 
     assert list(entry) == ["uri", "type", "outputs", "state"]
@@ -168,29 +170,29 @@ def test_authored_key_order_controls_dump_order() -> None:
     assert list(yaml.safe_load(entry["state"])) == ["later", "earlier"]
 
 
-def test_compile_manifests_as_a_string_list() -> None:
+def test_compile_manifests_as_a_string_list(tmp_path: Path) -> None:
     authored = parse_entries(K8S_ENTRY)[0]
-    compiled = parse_entries(compile_entry(K8S_ENTRY, "database-k8s.yaml"))[0]
+    compiled = parse_entries(compile_entry(K8S_ENTRY, "database-k8s.yaml", tmp_path))[0]
 
     assert isinstance(compiled["manifests"], str)
     assert yaml.safe_load(compiled["manifests"]) == authored["manifests"]
 
 
-def test_multiline_strings_keep_exact_content() -> None:
+def test_multiline_strings_keep_exact_content(tmp_path: Path) -> None:
     authored = parse_entries(K8S_ENTRY)[0]
-    compiled = parse_entries(compile_entry(K8S_ENTRY, "database-k8s.yaml"))[0]
+    compiled = parse_entries(compile_entry(K8S_ENTRY, "database-k8s.yaml", tmp_path))[0]
 
     config_map = yaml.safe_load(compiled["manifests"])[1]
     assert config_map["data"]["config.text"] == authored["manifests"][1]["data"]["config.text"]
 
 
-def test_multiline_values_dump_as_literal_blocks() -> None:
-    compiled = compile_entry(K8S_ENTRY, "database-k8s.yaml")
+def test_multiline_values_dump_as_literal_blocks(tmp_path: Path) -> None:
+    compiled = compile_entry(K8S_ENTRY, "database-k8s.yaml", tmp_path)
 
     assert "config.text: |" in compiled
 
 
-def test_absent_optional_fields_stay_absent() -> None:
+def test_absent_optional_fields_stay_absent(tmp_path: Path) -> None:
     compiled = parse_entries(
         compile_entry(
             """
@@ -199,13 +201,14 @@ def test_absent_optional_fields_stay_absent() -> None:
   description: Nothing else.
 """,
             "x.yaml",
+            tmp_path,
         )
     )[0]
 
     assert set(compiled) == {"uri", "type", "description"}
 
 
-def test_none_valued_fields_are_dropped() -> None:
+def test_none_valued_fields_are_dropped(tmp_path: Path) -> None:
     compiled = parse_entries(
         compile_entry(
             """
@@ -214,28 +217,29 @@ def test_none_valued_fields_are_dropped() -> None:
   state:
 """,
             "x.yaml",
+            tmp_path,
         )
     )[0]
 
     assert set(compiled) == {"uri", "type"}
 
 
-def test_non_list_document_is_rejected() -> None:
+def test_non_list_document_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match=r"Input should be a valid list"):
-        compile_entry("uri: template://example/x\ntype: example-x\n", "x.yaml")
+        compile_entry("uri: template://example/x\ntype: example-x\n", "x.yaml", tmp_path)
 
 
-def test_empty_file_is_rejected() -> None:
+def test_empty_file_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match=r"Input should be a valid list"):
-        compile_entry("", "x.yaml")
+        compile_entry("", "x.yaml", tmp_path)
 
 
-def test_empty_document_list_is_rejected() -> None:
+def test_empty_document_list_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="non-empty YAML list"):
-        compile_entry("[]\n", "x.yaml")
+        compile_entry("[]\n", "x.yaml", tmp_path)
 
 
-def test_validation_errors_carry_the_source_name() -> None:
+def test_validation_errors_carry_the_source_name(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match=r"database\.yaml"):
         compile_entry(
             """
@@ -246,6 +250,7 @@ def test_validation_errors_carry_the_source_name() -> None:
       image: example/db
 """,
             "database.yaml",
+            tmp_path,
         )
 
 
@@ -296,7 +301,7 @@ def test_compiled_output_is_independent_of_working_directory(tmp_path: Path) -> 
     (tmp_path / "compose").mkdir()
     (tmp_path / "compose" / "database.yaml").write_text(COMPOSE_ENTRY, encoding="utf-8")
 
-    expected = compile_provisioner_document(COMPOSE_ENTRY, "database.yaml", tmp_path, {})
+    expected = compile_entry(COMPOSE_ENTRY, "compose/database.yaml", tmp_path)
 
     with chdir(Path("/")):
         with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as paths:
@@ -308,8 +313,7 @@ def test_compiled_output_is_independent_of_working_directory(tmp_path: Path) -> 
 def test_compile_resolves_text_includes_before_stringifying(tmp_path: Path) -> None:
     (tmp_path / "workloads" / "relay").mkdir(parents=True)
     (tmp_path / "workloads" / "relay" / "config.river").write_text("relay {\n  on\n}\n", encoding="utf-8")
-    (tmp_path / "k8s.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay-k8s
   type: example-relay
   manifests:
@@ -320,13 +324,9 @@ def test_compile_resolves_text_includes_before_stringifying(tmp_path: Path) -> N
       data:
         config.river:
           include: workloads/relay/config.river
-""",
-        encoding="utf-8",
-    )
+"""
 
-    compiled = parse_entries(
-        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})
-    )[0]
+    compiled = parse_entries(compile_entry(authored, "k8s.yaml", tmp_path))[0]
 
     config_map = yaml.safe_load(compiled["manifests"])[0]
     assert config_map["data"]["config.river"] == "relay {\n  on\n}\n"
@@ -335,52 +335,47 @@ def test_compile_resolves_text_includes_before_stringifying(tmp_path: Path) -> N
 def test_compile_dumps_resolved_text_includes_as_literal_blocks(tmp_path: Path) -> None:
     (tmp_path / "workloads" / "relay").mkdir(parents=True)
     (tmp_path / "workloads" / "relay" / "config.river").write_text("relay {\n  on\n}\n", encoding="utf-8")
-    (tmp_path / "k8s.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay-k8s
   type: example-relay
   manifests:
     - apiVersion: v1
       kind: ConfigMap
+      metadata:
+        name: relay-config
       data:
         config.river:
           include: workloads/relay/config.river
-""",
-        encoding="utf-8",
-    )
+"""
 
-    compiled = compile_provisioner_document(
-        (tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {}
-    )
+    compiled = compile_entry(authored, "k8s.yaml", tmp_path)
 
     assert "config.river: |" in compiled
 
 
 def test_compile_include_missing_file_names_the_source_and_path(tmp_path: Path) -> None:
-    (tmp_path / "k8s.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay-k8s
   type: example-relay
   manifests:
     - apiVersion: v1
       kind: ConfigMap
+      metadata:
+        name: relay-config
       data:
         config.river:
           include: workloads/relay/missing.river
-""",
-        encoding="utf-8",
-    )
+"""
 
     with pytest.raises(RuntimeError, match=r"k8s\.yaml.*missing\.river"):
-        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})
+        compile_entry(authored, "k8s.yaml", tmp_path)
 
 
 LOCK_ENTRY = {"ALLOY_IMAGE": "ghcr.io/mirror/docker.io/grafana/alloy:v1.9.0@sha256:" + "a" * 64}
 
 
 def test_compile_resolves_lock_markers_before_stringifying(tmp_path: Path) -> None:
-    (tmp_path / "k8s.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay-k8s
   type: example-relay
   manifests:
@@ -393,54 +388,38 @@ def test_compile_resolves_lock_markers_before_stringifying(tmp_path: Path) -> No
             - name: relay
               image:
                 lock: ALLOY_IMAGE
-""",
-        encoding="utf-8",
-    )
+"""
 
-    compiled = parse_entries(
-        compile_provisioner_document(
-            (tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, LOCK_ENTRY
-        )
-    )[0]
+    compiled = parse_entries(compile_entry(authored, "k8s.yaml", tmp_path, LOCK_ENTRY))[0]
 
     deployment = yaml.safe_load(compiled["manifests"])[0]
     assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == LOCK_ENTRY["ALLOY_IMAGE"]
 
 
 def test_compile_lock_markers_resolve_in_services_too(tmp_path: Path) -> None:
-    (tmp_path / "compose.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay
   type: example-relay
   services:
     relay:
       image:
         lock: ALLOY_IMAGE
-""",
-        encoding="utf-8",
-    )
+"""
 
-    compiled = parse_entries(
-        compile_provisioner_document(
-            (tmp_path / "compose.yaml").read_text(encoding="utf-8"), "compose.yaml", tmp_path, LOCK_ENTRY
-        )
-    )[0]
+    compiled = parse_entries(compile_entry(authored, "compose.yaml", tmp_path, LOCK_ENTRY))[0]
 
     services = yaml.safe_load(compiled["services"])
     assert services["relay"]["image"] == LOCK_ENTRY["ALLOY_IMAGE"]
 
 
 def test_compile_unknown_lock_entry_names_the_source(tmp_path: Path) -> None:
-    (tmp_path / "k8s.yaml").write_text(
-        """
+    authored = """
 - uri: template://example/relay-k8s
   type: example-relay
   manifests:
     - image:
         lock: MISSING_IMAGE
-""",
-        encoding="utf-8",
-    )
+"""
 
     with pytest.raises(RuntimeError, match=r"k8s\.yaml.*'MISSING_IMAGE' does not exist"):
-        compile_provisioner_document((tmp_path / "k8s.yaml").read_text(encoding="utf-8"), "k8s.yaml", tmp_path, {})
+        compile_entry(authored, "k8s.yaml", tmp_path)

@@ -68,7 +68,12 @@ def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
             continue
         service_dirs.add(str(PurePosixPath(config.build.dockerfile).parent))
 
-    workload_root = _workload_root(service_dirs)
+    # Derive the workload root as the single top-level directory holding every tagged service;
+    # files under it that belong to no tagged service are excluded from every SHA.
+    tops = {PurePosixPath(service_dir).parts[0] for service_dir in service_dirs if PurePosixPath(service_dir).parts}
+    if len(tops) > 1:
+        raise RuntimeError(f"Bake services span multiple top-level directories: {sorted(tops)}")
+    workload_root = PurePosixPath(next(iter(tops))) if tops else None
 
     tree_entries = bash_output("git ls-tree -r HEAD", cwd=repo_root).splitlines()
 
@@ -109,14 +114,3 @@ def compute_service_shas(repo_root: Path, bake: BakeDocument) -> dict[str, str]:
         result[PurePosixPath(service_dir).name.upper().replace("-", "_") + "_SHA"] = f"tree-{tree_hash}"
 
     return result
-
-
-def _workload_root(service_dirs: set[str]) -> PurePosixPath | None:
-    # Derive the workload root as the single top-level directory holding every tagged service;
-    # exclude files under it that belong to no tagged service from every SHA.
-    tops = {PurePosixPath(service_dir).parts[0] for service_dir in service_dirs if PurePosixPath(service_dir).parts}
-    if not tops:
-        return None
-    if len(tops) > 1:
-        raise RuntimeError(f"Bake services span multiple top-level directories: {sorted(tops)}")
-    return PurePosixPath(next(iter(tops)))
