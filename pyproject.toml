@@ -9,7 +9,6 @@ dependencies = [
     "packaging>=24.1",
     "pathspec>=1.0.4",
     "pydantic>=2.11.7",
-    "pydantic-settings>=2.9.1",
     "pyyaml>=6.0",
     "strictyaml>=1.7.3",
     "typer>=0.17.4",
@@ -30,8 +29,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-up = "docker_devkit.up:app"
-down = "docker_devkit.down:app"
+up = "docker_devkit.compose:up_app"
+down = "docker_devkit.compose:down_app"
 build = "docker_devkit.build_docker:app"
 mirror = "docker_devkit.mirror:app"
 generate-score = "docker_devkit.score_generate:app"

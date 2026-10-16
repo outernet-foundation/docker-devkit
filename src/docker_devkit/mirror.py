@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import os
-import shlex
 from pathlib import Path
 
 import typer
-from bashrun.bash import bash, bash_check
+from bashrun.bash import bash
 
 from .config import MirrorConfig, load_config
-from .image_refs import declared_references
+from .documents import parse_bake
+from .image_refs import bake_base_image_refs
+from .lifecycle import MANIFEST_PATH
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
@@ -23,7 +24,9 @@ def mirror() -> None:
         raise RuntimeError("a mirror section with 'prefix' is required in docker-devkit.yaml to mirror")
     config = devkit.mirror
 
-    targets = sorted(declared_references(root), key=lambda occurrence: occurrence.reference)
+    manifest = root / MANIFEST_PATH
+    declared = bake_base_image_refs(parse_bake(manifest)) if manifest.exists() else []
+    targets = sorted(declared, key=lambda occurrence: occurrence.reference)
     charts = (
         sorted(devkit.generate_score.charts, key=lambda chart: chart.ref) if devkit.generate_score is not None else []
     )
@@ -33,16 +36,14 @@ def mirror() -> None:
     bash(f"curl -fsSLO https://github.com/google/go-containerregistry/releases/download/{CRANE_VERSION}/{archive}")
     bash(f"{sudo}tar -xzf {archive} -C /usr/local/bin crane")
     Path(archive).unlink()
-    for target in targets:
-        destination = mirrored_ref(target.reference, config.prefix)
-        print(f"Mirror {target.reference} -> {destination}")
-        bash(f"crane copy {target.reference} {destination}")
-    for chart in charts:
-        reference = chart.ref.removeprefix("oci://")
+    references = [occurrence.reference for occurrence in targets] + [
+        chart.ref.removeprefix("oci://") for chart in charts
+    ]
+    for reference in references:
         destination = mirrored_ref(reference, config.prefix)
         print(f"Mirror {reference} -> {destination}")
         bash(f"crane copy {reference} {destination}")
-    print(f"Mirrored references: {len(targets) + len(charts)}")
+    print(f"Mirrored references: {len(references)}")
 
 
 def load_mirror_config(root: Path) -> MirrorConfig | None:
@@ -56,26 +57,3 @@ def mirrored_ref(reference: str, prefix: str) -> str:
             f"x-base-images values are upstream-native; {reference} already carries the mirror prefix {prefix}"
         )
     return f"{prefix}/{reference}"
-
-
-def reference_exists(reference: str) -> bool:
-    return bash_check(f"docker buildx imagetools inspect {shlex.quote(reference)}")
-
-
-def enforce_mirrored(lock_data: dict[str, str]) -> None:
-    for value in sorted(lock_data.values()):
-        if reference_exists(value):
-            continue
-        reference, _, digest = value.rpartition("@")
-        raise RuntimeError(
-            f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
-            "the CI mirror job populates it when the declaring change runs"
-        )
-
-
-def main() -> None:
-    app()
-
-
-if __name__ == "__main__":
-    main()

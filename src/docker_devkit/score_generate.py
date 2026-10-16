@@ -14,18 +14,25 @@ from typing import Annotated, Literal, NamedTuple, Self
 import typer
 import yaml
 from bashrun.bash import bash, bash_output
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-from .config import ScoreConfig, load_config
-from .context_sha import compute_service_shas
-from .documents import parse_bake
+from .config import ScoreConfig, SecretsConfig, load_config
+from .documents import compute_service_shas, parse_bake
+from .markers import contains_marker, resolve_includes, resolve_lock_refs
 from .mirror import mirrored_ref
+from .provisioners import compiled_provisioners, dump_compose
+from .secrets import SecretKey, collect_secret_keys, is_mapping, validate_consumed
 
 # Match only ALL-CAPS placeholders so Score's lowercase dotted references never collide.
 PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 
 # Treat sources under this prefix as relative to score-compose's state directory.
 STATE_PREFIX = ".score-compose/"
+
+# Declaration keys are ALL_CAPS; count a brace hole as consumed when an odd number of dollars
+# precedes it, since even runs are $$-escaped literals.
+DECLARED_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
+COMPOSE_HOLE = re.compile(r"(\$+)\{([A-Z][A-Z0-9_]*)(?::[^{}]*)?\}")
 
 Target = Literal["both", "compose", "k8s"]
 
@@ -97,18 +104,6 @@ class ToolRequirement(NamedTuple):
     extract: str
 
 
-class ComposeDumper(yaml.SafeDumper):
-    pass
-
-
-def _represent_multiline(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
-    # Force literal block style for multiline strings, building the node directly to satisfy strict typing.
-    return yaml.ScalarNode("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
-
-
-ComposeDumper.add_representer(str, _represent_multiline)
-
-
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
 
@@ -140,41 +135,52 @@ def cli(
     # Resolve image tags from the committed tree, exactly as up and build do.
     os.environ.update(compute_service_shas(root, parse_bake(config.bake_file)))
     os.environ[config.storage_class_var] = config.local_storage_class if local else config.cloud_storage_class
+    # The lock beside the manifest is the single digest source for authored lock markers.
+    lock_path = root / config.bake_file.with_suffix(".lock")
+    if not lock_path.is_file():
+        raise RuntimeError(f"{lock_path.as_posix()}: the image lock is required for generation (build writes it)")
+    images: dict[str, str] = {}
+    for number, line in enumerate(lock_path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name, separator, reference = stripped.partition("=")
+        if not separator or not name.strip() or not reference.strip():
+            raise RuntimeError(f"{lock_path.as_posix()}:{number}: lock lines are NAME=reference entries")
+        if name in images:
+            raise RuntimeError(f"{lock_path.as_posix()}:{number}: duplicate lock entry {name}")
+        images[name] = reference
+    if not images:
+        raise RuntimeError(f"{lock_path.as_posix()}: the image lock carries no entries")
+    k8s_output = config.k8s_local_output if local else config.k8s_output
 
     if target in ("both", "compose"):
-        _generate_compose(root, config)
+        generate_compose(root, config, images)
 
     if target in ("both", "k8s"):
         mirror_prefix = devkit.mirror.prefix if devkit.mirror is not None else None
-        _generate_k8s(root, config, config.k8s_local_output if local else config.k8s_output, mirror_prefix)
+        generate_k8s(root, config, k8s_output, mirror_prefix, images)
+
+    if config.secrets is not None:
+        enforce_secret_contract(root, config, target, k8s_output, config.secrets)
 
 
 def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequirement]:
-    requirements: list[ToolRequirement] = []
+    score_tools: list[tuple[str, str]] = []
     if target in ("both", "compose"):
-        version = config.score_compose_version
-        releases = "https://github.com/score-spec/score-compose/releases"
-        requirements.append(
-            ToolRequirement(
-                binary="score-compose",
-                version=version,
-                release=f"{releases}/tag/{version}",
-                archive=f"{releases}/download/{version}/score-compose_{version}_linux_amd64.tar.gz",
-                extract="score-compose",
-            )
-        )
+        score_tools.append(("score-compose", config.score_compose_version))
     if target in ("both", "k8s"):
-        version = config.score_k8s_version
-        releases = "https://github.com/score-spec/score-k8s/releases"
-        requirements.append(
-            ToolRequirement(
-                binary="score-k8s",
-                version=version,
-                release=f"{releases}/tag/{version}",
-                archive=f"{releases}/download/{version}/score-k8s_{version}_linux_amd64.tar.gz",
-                extract="score-k8s",
-            )
+        score_tools.append(("score-k8s", config.score_k8s_version))
+    requirements = [
+        ToolRequirement(
+            binary=binary,
+            version=version,
+            release=f"https://github.com/score-spec/{binary}/releases/tag/{version}",
+            archive=f"https://github.com/score-spec/{binary}/releases/download/{version}/{binary}_{version}_linux_amd64.tar.gz",
+            extract=binary,
         )
+        for binary, version in score_tools
+    ]
     # Strip one path component for helm, whose archive nests its binary under linux-amd64/.
     if config.charts and target in ("both", "k8s"):
         version = config.helm_version
@@ -190,24 +196,24 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
     return requirements
 
 
-def _generate_compose(root: Path, config: ScoreConfig) -> None:
+def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -> None:
     score_dir = root / config.score_dir
 
-    _init_state(
-        f"score-compose init --project {config.project_name} --no-sample",
-        config.compose_provisioners,
-        config.compose_patch_templates,
-        source_dir=score_dir,
-        working_dir=score_dir,
-    )
-
-    (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
-    publishes = "".join(f" --publish {publish}" for publish in config.publishes)
-    with _rendered_workloads(root, config) as workloads:
-        bash(
-            f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
-            cwd=score_dir,
+    with compiled_provisioners(score_dir, config.compose_provisioners, root, images) as provisioners:
+        _init_state(
+            f"score-compose init --project {config.project_name} --no-sample",
+            provisioners,
+            [score_dir / name for name in config.compose_patch_templates],
+            working_dir=score_dir,
         )
+
+        (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
+        publishes = "".join(f" --publish {publish}" for publish in config.publishes)
+        with _rendered_workloads(root, config) as workloads:
+            bash(
+                f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
+                cwd=score_dir,
+            )
 
     # Inline every bind as configs.content with $ doubled, leaving zero host-filesystem references.
     document = yaml.safe_load((root / config.compose_output).read_text(encoding="utf-8"))
@@ -241,40 +247,31 @@ def _generate_compose(root: Path, config: ScoreConfig) -> None:
 
     if contents:
         document["configs"] = {**(document.get("configs") or {}), **contents}
-        # Dump through ComposeDumper so multiline content lands as literal blocks.
-        write_generated_file(
-            root / config.compose_output,
-            yaml.dump(
-                document,
-                Dumper=ComposeDumper,
-                default_flow_style=False,
-                sort_keys=False,
-                width=1_000_000,
-                allow_unicode=True,
-            ),
-        )
+        write_generated_file(root / config.compose_output, dump_compose(document))
 
     # The compose state dir is per-run temp; deleting it keeps the next run provisioning from scratch.
     shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
 
 
-def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None) -> None:
-    # score-k8s writes its state to .score-k8s under its cwd, so run it beside the configured state dir.
+def generate_k8s(
+    root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None, images: dict[str, str]
+) -> None:
+    # Run score-k8s beside the configured state dir; it writes .score-k8s under its cwd.
     state_dir = root / config.k8s_state
     output_path = root / output
     state_dir.parent.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _init_state(
-        "score-k8s init --no-sample",
-        config.k8s_provisioners,
-        [],
-        source_dir=root / config.score_dir,
-        working_dir=state_dir.parent,
-    )
+    with compiled_provisioners(root / config.score_dir, config.k8s_provisioners, root, images) as provisioners:
+        _init_state(
+            "score-k8s init --no-sample",
+            provisioners,
+            [],
+            working_dir=state_dir.parent,
+        )
 
-    with _rendered_workloads(root, config) as workloads:
-        bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
+        with _rendered_workloads(root, config) as workloads:
+            bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
     # Render charts through helm template into the same sorted documents, pulling each
     # digest-pinned upstream ref from the org mirror; helm is a renderer, never a deployer.
@@ -284,12 +281,29 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
                 "charts are org-mirrored; a mirror section with 'prefix' is required in docker-devkit.yaml"
             )
         chart_blocks: list[str] = []
-        for chart in config.charts:
-            reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
-            values = "".join(f" --values {(root / path).as_posix()}" for path in chart.values)
-            namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
-            rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
-            chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
+        with TemporaryDirectory(prefix="resolved-values-") as values_directory:
+            values_dir = Path(values_directory)
+            for chart in config.charts:
+                reference = mirrored_ref(chart.ref.removeprefix("oci://"), mirror_prefix)
+                # Pass a marker-free values file through untouched; resolve markers into a tempdir copy.
+                values_arguments: list[str] = []
+                for path in chart.values:
+                    source = root / path
+                    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+                    if not contains_marker(document):
+                        values_arguments.append(source.as_posix())
+                        continue
+                    resolved = resolve_lock_refs(
+                        resolve_includes(document, root, path.as_posix()), images, path.as_posix()
+                    )
+                    target = values_dir / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    write_generated_file(target, dump_compose(resolved))
+                    values_arguments.append(target.as_posix())
+                values = "".join(f" --values {argument}" for argument in values_arguments)
+                namespace = f" --namespace {chart.namespace}" if chart.namespace else ""
+                rendered = bash_output(f"helm template {chart.name} oci://{reference}{values}{namespace}")
+                chart_blocks.extend(block for block in re.split(r"(?m)^---$\n", rendered) if block.strip())
         write_generated_file(
             output_path,
             output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in chart_blocks),
@@ -312,9 +326,7 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
         state_text = re.sub(rf"(?m)^(\s*file:\s*).*/{re.escape(name)}$", rf"\g<1>{name}", state_text)
     write_generated_file(state_path, state_text)
 
-    # score-k8s mints a random instance_suffix per workload and stamps it into the manifests;
-    # rewrite it to a name-derived hash so output reproduces from fresh state. The state dir is
-    # per-run temp, so the rmtree leaves nothing behind either way.
+    # Rewrite each random instance_suffix to a name-derived hash so output reproduces from fresh state.
     state = ScoreState.model_validate(yaml.safe_load(state_text) or {})
     manifest_text = output_path.read_text(encoding="utf-8")
     for name, entry in state.workloads.items():
@@ -332,6 +344,57 @@ def _generate_k8s(root: Path, config: ScoreConfig, output: Path, mirror_prefix: 
     shutil.rmtree(state_dir, ignore_errors=True)
 
 
+def enforce_secret_contract(
+    root: Path, config: ScoreConfig, target: Target, k8s_output: Path, secrets: SecretsConfig
+) -> None:
+    # Validate each rendering this run generated against the declaration, and derive the mint
+    # list from the declaration alone.
+    declaration_path = root / secrets.file
+    if not declaration_path.is_file():
+        raise RuntimeError(f"{declaration_path.as_posix()}: the secrets declaration file does not exist")
+
+    declaration_document = yaml.safe_load(declaration_path.read_text(encoding="utf-8"))
+    if not is_mapping(declaration_document) or not declaration_document:
+        raise RuntimeError(
+            f"{declaration_path.as_posix()}: the secrets declaration is a non-empty KEY: description mapping"
+        )
+
+    declared: dict[str, SecretKey] = {}
+    for name, spec in declaration_document.items():
+        if not isinstance(name, str) or not DECLARED_KEY.match(name):
+            raise RuntimeError(f"{declaration_path.as_posix()}: {name!r} is not an ALL_CAPS key")
+        if isinstance(spec, str):
+            spec = {"description": spec}
+        try:
+            declared[name] = SecretKey.model_validate(spec)
+        except ValidationError as error:
+            raise RuntimeError(f"{declaration_path.as_posix()}: key {name} rejected: {error}") from error
+
+    if target in ("both", "compose"):
+        artifact = root / config.compose_output
+        consumed: set[str] = set()
+        for match in COMPOSE_HOLE.finditer(artifact.read_text(encoding="utf-8")):
+            if len(match.group(1)) % 2 == 1:
+                consumed.add(match.group(2))
+        validate_consumed(consumed, declared, "compose", secrets.file.as_posix())
+
+    if target in ("both", "k8s"):
+        artifact = root / k8s_output
+        consumed = set()
+        for block in re.split(r"(?m)^---$\n", artifact.read_text(encoding="utf-8")):
+            if block.strip():
+                collect_secret_keys(yaml.safe_load(block), secrets.k8s_secret, consumed)
+        validate_consumed(consumed, declared, "k8s", secrets.file.as_posix())
+
+    output = root / secrets.output
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_generated_file(
+        output,
+        "# Generated by generate-score from the secrets declaration\n"
+        + "".join(f"{name}\n" for name in sorted(name for name, key in declared.items() if key.mint)),
+    )
+
+
 def ensure_score_tools(config: ScoreConfig, bin_dir: Path, target: Target = "both") -> None:
     # Fetch release binaries rather than go install, since score-spec tags are not valid Go module versions.
     for requirement in tool_requirements(config, target):
@@ -343,20 +406,19 @@ def ensure_score_tools(config: ScoreConfig, bin_dir: Path, target: Target = "bot
 
 def _init_state(
     command: str,
-    provisioners: list[str],
-    patch_templates: list[str],
+    provisioners: list[Path],
+    patch_templates: list[Path],
     *,
-    source_dir: Path,
     working_dir: Path,
 ) -> None:
     # Init idempotently with POSIX relative paths, so no machine path or separator reaches a state file.
     flags = "".join(
-        f" --provisioners {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
-        for name in provisioners
+        f" --provisioners {shlex.quote(Path(os.path.relpath(provisioner, working_dir)).as_posix())}"
+        for provisioner in provisioners
     )
     flags += "".join(
-        f" --patch-templates {shlex.quote(Path(os.path.relpath(source_dir / name, working_dir)).as_posix())}"
-        for name in patch_templates
+        f" --patch-templates {shlex.quote(Path(os.path.relpath(patch_template, working_dir)).as_posix())}"
+        for patch_template in patch_templates
     )
     bash(f"{command}{flags}", cwd=working_dir)
 

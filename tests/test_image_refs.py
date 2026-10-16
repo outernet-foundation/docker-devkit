@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from docker_devkit import image_refs
 from docker_devkit.documents import BakeDocument
@@ -10,10 +9,7 @@ from docker_devkit.image_refs import (
     VersionCoupling,
     VersionSite,
     bake_base_image_refs,
-    declared_references,
     resolve_remote_digest,
-    stray_references,
-    strip_build_args,
     unpinned_references,
     version_coupling_violations,
 )
@@ -58,40 +54,13 @@ class TestBakeBaseImageRefs:
         assert bake_base_image_refs(bake) == []
 
 
-class TestDeclaredReferences:
-    def test_should_yield_images_manifest_declarations(self, tmp_path: Path):
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text(
-            "x-base-images:\n  ALPINE_IMAGE: alpine:3.20\n", encoding="utf-8"
-        )
-        assert declared_references(tmp_path) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
-
-    def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
-        assert declared_references(tmp_path) == []
-
-    def test_should_scan_only_manifests(self, tmp_path: Path):
-        (tmp_path / "compose.yml").write_text(
-            "services:\n  minio:\n    x-image-ref: docker.io/minio/minio:latest\n", encoding="utf-8"
-        )
-        docker_directory = tmp_path / "docker" / "api"
-        docker_directory.mkdir(parents=True)
-        (docker_directory / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
-        assert declared_references(tmp_path) == []
-
-    def test_should_reject_unpinned_declaration(self, tmp_path: Path):
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text("x-base-images:\n  ALPINE_IMAGE: alpine\n", encoding="utf-8")
-        with pytest.raises(ValidationError):
-            declared_references(tmp_path)
-
-
-class TestStrayReferences:
+class TestUnpinnedReferences:
     def test_should_collect_workload_and_score_sources(self, tmp_path: Path):
         workloads_directory = tmp_path / "workloads" / "api"
         workloads_directory.mkdir(parents=True)
         (workloads_directory / "Dockerfile").write_text(
-            "FROM --platform=linux/amd64 python:3.13-slim AS base\n"
-            "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/\n"
+            "FROM --platform=linux/amd64 ghcr.io/library/python AS base\n"
+            "COPY --from=ghcr.io/astral-sh/uv /uv /uvx /usr/local/bin/\n"
             "COPY --from=base /x /y\n"
             "RUN pip install x\n",
             encoding="utf-8",
@@ -99,61 +68,51 @@ class TestStrayReferences:
         score_directory = tmp_path / "stack" / "score"
         score_directory.mkdir(parents=True)
         (score_directory / "app.provisioners.yaml").write_text(
-            "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak:26.3.5@sha256:abc\n",
+            "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak\n",
             encoding="utf-8",
         )
-        assert stray_references(tmp_path) == [
-            ImageReference("", "python:3.13-slim"),
-            ImageReference("", "ghcr.io/astral-sh/uv:latest"),
-            ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
+        assert unpinned_references(tmp_path) == [
+            "ghcr.io/library/python",
+            "ghcr.io/astral-sh/uv",
+            "quay.io/keycloak/keycloak",
         ]
 
     def test_should_collect_legacy_layout_sources(self, tmp_path: Path):
         docker_directory = tmp_path / "docker" / "api"
         docker_directory.mkdir(parents=True)
-        (docker_directory / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
+        (docker_directory / "Dockerfile").write_text("FROM ghcr.io/library/python\n", encoding="utf-8")
         score_directory = tmp_path / "score"
         score_directory.mkdir()
         (score_directory / "app.provisioners.yaml").write_text(
-            "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak:26.3.5@sha256:abc\n",
+            "containers:\n  - name: keycloak\n    image: quay.io/keycloak/keycloak\n",
             encoding="utf-8",
         )
-        assert stray_references(tmp_path) == [
-            ImageReference("", "python:3.13-slim"),
-            ImageReference("", "quay.io/keycloak/keycloak:26.3.5@sha256:abc"),
+        assert unpinned_references(tmp_path) == [
+            "ghcr.io/library/python",
+            "quay.io/keycloak/keycloak",
         ]
 
     def test_should_collect_nested_score_provisioner_directories(self, tmp_path: Path):
         compose_directory = tmp_path / "stack" / "score" / "compose"
         compose_directory.mkdir(parents=True)
         (compose_directory / "seaweedfs.yaml").write_text(
-            "services: |\n  seaweedfs:\n    image: chrislusf/seaweedfs:3.82\n",
+            "services: |\n  seaweedfs:\n    image: chrislusf/seaweedfs\n",
             encoding="utf-8",
         )
         k8s_directory = tmp_path / "stack" / "score" / "k8s"
         k8s_directory.mkdir()
         (k8s_directory / "postgres.yaml").write_text(
-            "manifests: |\n  image: postgres:16.4\n",
+            "manifests: |\n  image: docker.io/library/postgres\n",
             encoding="utf-8",
         )
-        assert stray_references(tmp_path) == [
-            ImageReference("", "chrislusf/seaweedfs:3.82"),
-            ImageReference("", "postgres:16.4"),
+        assert unpinned_references(tmp_path) == [
+            "chrislusf/seaweedfs",
+            "docker.io/library/postgres",
         ]
 
     def test_should_return_empty_for_empty_tree(self, tmp_path: Path):
-        assert stray_references(tmp_path) == []
+        assert unpinned_references(tmp_path) == []
 
-
-class TestStripBuildArgs:
-    def test_should_remove_build_arg_suffixes(self):
-        assert strip_build_args("grafana/alloy:v1.9.0${ALLOY_DIGEST}") == "grafana/alloy:v1.9.0"
-
-    def test_should_return_empty_for_pure_build_arg(self):
-        assert not strip_build_args("${BASE_IMAGE}")
-
-
-class TestUnpinnedReferences:
     def test_should_return_empty_when_everything_is_pinned(self, tmp_path: Path):
         docker_directory = tmp_path / "workloads" / "api"
         docker_directory.mkdir(parents=True)

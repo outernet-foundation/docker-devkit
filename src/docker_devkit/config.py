@@ -50,6 +50,14 @@ class ChartConfig(BaseModel):
         return ref
 
 
+class SecretsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: Path
+    k8s_secret: str
+    output: Path = Path("stack/generated/secrets.txt")
+
+
 class ScoreConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,8 +69,8 @@ class ScoreConfig(BaseModel):
     bake_file: Path = Path("workloads/images.yml")
     compose_output: Path = Path("stack/generated/compose/compose.yaml")
     k8s_output: Path = Path("stack/generated/k8s/manifests.yaml")
-    # --local writes here instead of the committed k8s output; consumers gitignore this path so a
-    # local-only storage class cannot reach the artifact their cluster deploys.
+    # Write --local output here; consumers gitignore it so a local storage class cannot reach
+    # the artifact their cluster deploys.
     k8s_local_output: Path = Path("stack/generated/k8s/manifests.local.yaml")
     k8s_state: Path = Path("stack/generated/k8s/.score-k8s")
     storage_class_var: str = "SCORE_STORAGE_CLASS"
@@ -70,6 +78,7 @@ class ScoreConfig(BaseModel):
     compose_patch_templates: list[str] = Field(default_factory=list)
     k8s_provisioners: list[str] = Field(default_factory=list)
     publishes: list[str] = Field(default_factory=list)
+    secrets: SecretsConfig | None = None
     charts: list[ChartConfig] = Field(default_factory=list)
     helm_version: str = ""
     score_k8s_version: str = "0.15.0"
