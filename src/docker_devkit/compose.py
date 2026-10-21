@@ -1,11 +1,12 @@
 import os
+import re
 import shlex
 from os import environ
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from bashrun.bash import bash_check, bash_handoff
+from bashrun.bash import CalledProcessError, bash_handoff, bash_output
 
 from .build_docker import run_build
 from .config import load_config
@@ -24,6 +25,8 @@ from .lifecycle import (
 from .mirror import load_mirror_config
 
 ENV_FILE = Path(".env")
+
+_MANIFEST_ABSENT_PATTERN = re.compile(r"\b404\b|not found|manifest unknown", re.IGNORECASE)
 
 up_app = typer.Typer(add_completion=False)
 down_app = typer.Typer(add_completion=False)
@@ -55,16 +58,14 @@ def up(
         raise typer.BadParameter("--build requires an image manifest (workloads/images.yml)")
 
     if load_mirror_config(root) is not None:
-        # Fail closed over every lock entry: a missing mirror image means the declaring change
-        # has not been through CI's mirror job yet, and there is no escape flag.
+        # Fail closed over every lock entry, distinguishing a manifest the registry truly lacks
+        # (the declaring change has not been through CI's mirror job; no escape flag) from a
+        # probe that failed before reaching a verdict (credentials, network, daemon availability).
         for value in sorted(parse_env_file(root / LOCK_PATH).values()):
-            if bash_check(f"docker buildx imagetools inspect {shlex.quote(value)}"):
+            message = _mirror_probe_message(value)
+            if message is None:
                 continue
-            reference, _, digest = value.rpartition("@")
-            raise RuntimeError(
-                f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
-                "the CI mirror job populates it when the declaring change runs"
-            )
+            raise RuntimeError(message)
 
     if build:
         run_build(gpu=gpu)
@@ -161,3 +162,23 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
     prefix = f"docker compose {files_args} --project-directory {root} --env-file .env --env-file {lock_file}"
     return manifest, prefix
+
+
+def _mirror_probe_message(value: str) -> str | None:
+    reference, _, digest = value.rpartition("@")
+    try:
+        bash_output(f"docker buildx imagetools inspect {shlex.quote(value)}")
+    except CalledProcessError as error:
+        stderr = (error.stderr or str(error)).strip()
+        if _MANIFEST_ABSENT_PATTERN.search(stderr):
+            return (
+                f"Image {reference or value} (digest {digest or 'unknown'}) is not mirrored yet; "
+                "the CI mirror job populates it when the declaring change runs"
+            )
+        return (
+            f"Image {reference or value} (digest {digest or 'unknown'}): the mirror probe "
+            "(docker buildx imagetools inspect) failed before it could determine whether the image "
+            "exists, so this is not evidence the image is missing; check registry credentials, network, "
+            f"and docker daemon availability. Probe error: {stderr}"
+        )
+    return None
