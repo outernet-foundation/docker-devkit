@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from bashrun.bash import CalledProcessError
 from typer.testing import CliRunner
 
 from docker_devkit import compose
@@ -40,14 +41,19 @@ def _rathole_profiles(compose_prefix: str) -> list[str]:
     return ["tunnel-rathole"]
 
 
-def _probe_true(command: str) -> bool:
+def _probe_present(command: str) -> str:
     assert "imagetools inspect" in command
-    return True
+    return ""
 
 
-def _probe_false(command: str) -> bool:
+def _probe_absent(command: str) -> str:
     assert "imagetools inspect" in command
-    return False
+    raise CalledProcessError(1, command, stderr="unexpected status from HEAD request: 404 Not Found\n")
+
+
+def _probe_unauthorized(command: str) -> str:
+    assert "imagetools inspect" in command
+    raise CalledProcessError(1, command, stderr="unauthorized: authentication required\n")
 
 
 class SelectiveProbe:
@@ -55,10 +61,12 @@ class SelectiveProbe:
         self.present = present
         self.probed: list[str] = []
 
-    def check(self, command: str) -> bool:
+    def run(self, command: str) -> str:
         reference = command.rpartition("inspect ")[2]
         self.probed.append(reference)
-        return reference == self.present
+        if reference == self.present:
+            return ""
+        raise CalledProcessError(1, command, stderr="unexpected status from HEAD request: 404 Not Found")
 
 
 class HandoffRecorder:
@@ -154,13 +162,33 @@ class TestMirroredLockEnforcement:
         )
         monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
         monkeypatch.setattr(compose, "_compose_invocation", _stub_invocation)
-        monkeypatch.setattr(compose, "bash_check", _probe_false)
+        monkeypatch.setattr(compose, "bash_output", _probe_absent)
         monkeypatch.chdir(tmp_path)
 
         result = runner.invoke(compose.up_app, [])
 
         assert result.exit_code != 0
         assert str(result.exception) == LOCKED_ERROR
+
+    def test_probe_failure_is_not_reported_as_an_unmirrored_image(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._write_mirrored_tree(
+            tmp_path, f"ALPINE_IMAGE={MIRROR_PREFIX}/docker.io/library/alpine:3.20@{FAKE_DIGEST}\n"
+        )
+        monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
+        monkeypatch.setattr(compose, "_compose_invocation", _stub_invocation)
+        monkeypatch.setattr(compose, "bash_output", _probe_unauthorized)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(compose.up_app, [])
+
+        assert result.exit_code != 0
+        message = str(result.exception)
+        assert "not mirrored yet" not in message
+        assert "not evidence the image is missing" in message
+        assert "authentication required" in message
+        assert "alpine" in message
 
     def test_present_entries_proceed_to_bring_up(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         self._write_mirrored_tree(
@@ -169,7 +197,7 @@ class TestMirroredLockEnforcement:
         monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
         recorder = HandoffRecorder()
         monkeypatch.setattr(compose, "_compose_invocation", _stub_invocation)
-        monkeypatch.setattr(compose, "bash_check", _probe_true)
+        monkeypatch.setattr(compose, "bash_output", _probe_present)
         monkeypatch.setattr(compose, "bash_handoff", recorder.run)
         monkeypatch.chdir(tmp_path)
 
@@ -185,7 +213,7 @@ class TestMirroredLockEnforcement:
         self._write_mirrored_tree(tmp_path, f"UV_IMAGE={present}\nALPINE_IMAGE={absent}\n")
         monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
         monkeypatch.setattr(compose, "_compose_invocation", _stub_invocation)
-        monkeypatch.setattr(compose, "bash_check", probe.check)
+        monkeypatch.setattr(compose, "bash_output", probe.run)
         monkeypatch.chdir(tmp_path)
 
         result = runner.invoke(compose.up_app, [])
