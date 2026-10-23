@@ -198,59 +198,84 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
 
 def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -> None:
     score_dir = root / config.score_dir
+    score_state = score_dir / ".score-compose"
 
     with compiled_provisioners(score_dir, config.compose_provisioners, root, images) as provisioners:
-        _init_state(
-            f"score-compose init --project {config.project_name} --no-sample",
-            provisioners,
-            [score_dir / name for name in config.compose_patch_templates],
-            working_dir=score_dir,
-        )
-
-        (root / config.compose_output).parent.mkdir(parents=True, exist_ok=True)
-        publishes = "".join(f" --publish {publish}" for publish in config.publishes)
-        with _rendered_workloads(root, config) as workloads:
-            bash(
-                f"score-compose generate {workloads} --output {(root / config.compose_output).as_posix()}{publishes}",
-                cwd=score_dir,
+        # One compose per GPU variant: the {gpu} token in compose_output and in patch-template
+        # names resolves per variant, GPU_VARIANT feeds workload-file ${GPU_VARIANT} image
+        # placeholders, and the state dir is re-created per variant so a variant's patch
+        # templates never leak into another's output.
+        for variant in config.gpu_variants or [None]:
+            _set_gpu_variant(variant)
+            output = root / _gpu_substituted(config.compose_output, variant)
+            templates = [score_dir / _gpu_substituted(Path(name), variant) for name in config.compose_patch_templates]
+            shutil.rmtree(score_state, ignore_errors=True)
+            _init_state(
+                f"score-compose init --project {config.project_name} --no-sample",
+                provisioners,
+                templates,
+                working_dir=score_dir,
             )
 
-    # Inline every bind as configs.content with $ doubled, leaving zero host-filesystem references.
-    document = yaml.safe_load((root / config.compose_output).read_text(encoding="utf-8"))
-    parsed = ComposeDocument.model_validate(document)
-    contents: dict[str, dict[str, str]] = {}
-    resolved: dict[str, Path] = {}
-    for name, service in (parsed.services or {}).items():
-        binds = [volume for volume in service.volumes or [] if isinstance(volume, BindVolume)]
-        if not binds:
-            continue
-        references: list[dict[str, str]] = []
-        for bind in binds:
-            # Resolve state-dir sources against score_dir, other relative sources against the repo root.
-            if bind.source.startswith(STATE_PREFIX):
-                path = score_dir / bind.source
-            elif Path(bind.source).is_absolute():
-                raise SystemExit(f"absolute bind source {bind.source} cannot be inlined hermetically")
-            else:
-                path = root / bind.source
-            if resolved.setdefault(path.name, path) != path:
-                raise SystemExit(f"bind sources {resolved[path.name]} and {path} collide on config name {path.name}")
-            contents[path.name] = {"content": path.read_text(encoding="utf-8").replace("$", "$$")}
-            references.append({"source": path.name, "target": bind.target})
-        raw = document["services"][name]
-        raw["configs"] = [*(raw.get("configs") or []), *references]
-        remaining = [volume for volume in raw["volumes"] if volume.get("type") != "bind"]
-        if remaining:
-            raw["volumes"] = remaining
-        else:
-            del raw["volumes"]
+            output.parent.mkdir(parents=True, exist_ok=True)
+            publishes = "".join(f" --publish {publish}" for publish in config.publishes)
+            with _rendered_workloads(root, config) as workloads:
+                bash(
+                    f"score-compose generate {workloads} --output {output.as_posix()}{publishes}",
+                    cwd=score_dir,
+                )
 
-    if contents:
-        document["configs"] = {**(document.get("configs") or {}), **contents}
-        write_generated_file(root / config.compose_output, dump_compose(document))
+            # Inline every bind as configs.content with $ doubled, leaving zero host-filesystem references.
+            document = yaml.safe_load(output.read_text(encoding="utf-8"))
+            parsed = ComposeDocument.model_validate(document)
+            contents: dict[str, dict[str, str]] = {}
+            resolved: dict[str, Path] = {}
+            for name, service in (parsed.services or {}).items():
+                binds = [volume for volume in service.volumes or [] if isinstance(volume, BindVolume)]
+                if not binds:
+                    continue
+                references: list[dict[str, str]] = []
+                for bind in binds:
+                    # Resolve state-dir sources against score_dir, other relative sources against the repo root.
+                    if bind.source.startswith(STATE_PREFIX):
+                        path = score_dir / bind.source
+                    elif Path(bind.source).is_absolute():
+                        raise SystemExit(f"absolute bind source {bind.source} cannot be inlined hermetically")
+                    else:
+                        path = root / bind.source
+                    if resolved.setdefault(path.name, path) != path:
+                        raise SystemExit(
+                            f"bind sources {resolved[path.name]} and {path} collide on config name {path.name}"
+                        )
+                    contents[path.name] = {"content": path.read_text(encoding="utf-8").replace("$", "$$")}
+                    references.append({"source": path.name, "target": bind.target})
+                raw = document["services"][name]
+                raw["configs"] = [*(raw.get("configs") or []), *references]
+                remaining = [volume for volume in raw["volumes"] if volume.get("type") != "bind"]
+                if remaining:
+                    raw["volumes"] = remaining
+                else:
+                    del raw["volumes"]
+
+            if contents:
+                document["configs"] = {**(document.get("configs") or {}), **contents}
+                write_generated_file(output, dump_compose(document))
 
     # The compose state dir is per-run temp; deleting it keeps the next run provisioning from scratch.
-    shutil.rmtree(score_dir / ".score-compose", ignore_errors=True)
+    shutil.rmtree(score_state, ignore_errors=True)
+
+
+def _gpu_substituted(path: Path, variant: str | None) -> Path:
+    return Path(path.as_posix().format(gpu=variant)) if variant is not None else path
+
+
+def _set_gpu_variant(variant: str | None) -> None:
+    # Set (or clear, so a host environment cannot leak into the no-variant case) the
+    # GPU_VARIANT placeholder source shared by every workload rendering in this process.
+    if variant is None:
+        os.environ.pop("GPU_VARIANT", None)
+    else:
+        os.environ["GPU_VARIANT"] = variant
 
 
 def generate_k8s(
@@ -261,12 +286,13 @@ def generate_k8s(
     output_path = root / output
     state_dir.parent.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _set_gpu_variant(config.k8s_gpu_variant or None)
 
     with compiled_provisioners(root / config.score_dir, config.k8s_provisioners, root, images) as provisioners:
         _init_state(
             "score-k8s init --no-sample",
             provisioners,
-            [],
+            [root / config.score_dir / name for name in config.k8s_patch_templates],
             working_dir=state_dir.parent,
         )
 
@@ -307,6 +333,23 @@ def generate_k8s(
         write_generated_file(
             output_path,
             output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in chart_blocks),
+        )
+
+    # Vendored third-party manifests ride in as committed multi-document files: upstream
+    # distributions without an OCI chart (KEDA ships GitHub-release YAML) still reach the
+    # artifact with zero generation-time fetching, then flow through the sort below.
+    for vendored in config.vendored_manifests:
+        vendored_path = root / vendored
+        if not vendored_path.is_file():
+            raise RuntimeError(f"{vendored_path.as_posix()}: declared vendored manifest does not exist")
+        blocks = [
+            block for block in re.split(r"(?m)^---$\n", vendored_path.read_text(encoding="utf-8")) if block.strip()
+        ]
+        if not blocks:
+            raise RuntimeError(f"{vendored_path.as_posix()}: declared vendored manifest carries no documents")
+        write_generated_file(
+            output_path,
+            output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in blocks),
         )
 
     # Sort documents by kind, namespace, and name, since score-k8s emits in randomised map order.
@@ -371,11 +414,12 @@ def enforce_secret_contract(
             raise RuntimeError(f"{declaration_path.as_posix()}: key {name} rejected: {error}") from error
 
     if target in ("both", "compose"):
-        artifact = root / config.compose_output
         consumed: set[str] = set()
-        for match in COMPOSE_HOLE.finditer(artifact.read_text(encoding="utf-8")):
-            if len(match.group(1)) % 2 == 1:
-                consumed.add(match.group(2))
+        for variant in config.gpu_variants or [None]:
+            artifact = root / _gpu_substituted(config.compose_output, variant)
+            for match in COMPOSE_HOLE.finditer(artifact.read_text(encoding="utf-8")):
+                if len(match.group(1)) % 2 == 1:
+                    consumed.add(match.group(2))
         validate_consumed(consumed, declared, "compose", secrets.file.as_posix())
 
     if target in ("both", "k8s"):

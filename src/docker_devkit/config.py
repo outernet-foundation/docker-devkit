@@ -77,7 +77,11 @@ class ScoreConfig(BaseModel):
     compose_provisioners: list[str] = Field(default_factory=list)
     compose_patch_templates: list[str] = Field(default_factory=list)
     k8s_provisioners: list[str] = Field(default_factory=list)
+    k8s_patch_templates: list[str] = Field(default_factory=list)
     publishes: list[str] = Field(default_factory=list)
+    gpu_variants: list[str] = Field(default_factory=list)
+    k8s_gpu_variant: str = ""
+    vendored_manifests: list[Path] = Field(default_factory=list)
     secrets: SecretsConfig | None = None
     charts: list[ChartConfig] = Field(default_factory=list)
     helm_version: str = ""
@@ -91,6 +95,23 @@ class ScoreConfig(BaseModel):
         names = [chart.name for chart in self.charts]
         if len(names) != len(set(names)):
             raise ValueError("chart names must be unique; a duplicate collides on rendered resource names")
+        return self
+
+    @model_validator(mode="after")
+    def _gpu_variants_need_unique_outputs(self) -> Self:
+        templated = "{gpu}" in self.compose_output.as_posix()
+        if self.gpu_variants and not templated:
+            raise ValueError(
+                "gpu_variants declared: compose_output must carry a {gpu} token or every variant overwrites the same file"
+            )
+        if not self.gpu_variants and templated:
+            raise ValueError(
+                "compose_output carries {gpu} but no gpu_variants are declared; there is nothing to substitute"
+            )
+        if any(not variant for variant in self.gpu_variants):
+            raise ValueError("gpu variant names must be non-empty")
+        if len(self.gpu_variants) != len(set(self.gpu_variants)):
+            raise ValueError("gpu variant names must be unique; duplicates overwrite the same output")
         return self
 
 
