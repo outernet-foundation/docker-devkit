@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -45,12 +46,24 @@ def publish_compose(
         str | None,
         typer.Option("--branch", help="Branch tag for the second publish; defaults to the checked-out branch."),
     ] = None,
+    plan: Annotated[
+        bool,
+        typer.Option("--plan", help="Print the publish legs as a bare JSON array (empty when no section); no publish."),
+    ] = False,
 ) -> None:
     root = Path.cwd()
     devkit = load_config(root)
     if devkit is None or devkit.publish_compose is None:
+        if plan:
+            print(json.dumps([]))
+            return
         raise RuntimeError("a publish-compose section (repository, artifact, files) is required in docker-devkit.yaml")
     config = devkit.publish_compose
+
+    if plan:
+        legs: list[dict[str, str]] = [{"variant": declared} for declared in config.variants]
+        print(json.dumps(legs or [{}]))
+        return
 
     if config.variants and variant is None:
         raise typer.BadParameter(f"--variant is required; declared variants: {config.variants}")

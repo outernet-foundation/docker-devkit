@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -354,3 +355,67 @@ class TestPublishComposeVerb:
 
         assert result.exit_code != 0
         assert isinstance(result.exception, SystemExit)
+
+
+class TestPlan:
+    def test_no_section_plans_disabled_without_credentials(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _write_config(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("REGISTRY_USERNAME", raising=False)
+        monkeypatch.delenv("REGISTRY_TOKEN", raising=False)
+
+        result = runner.invoke(publish_compose.app, ["--plan"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == []
+
+    def test_no_config_file_plans_disabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("REGISTRY_USERNAME", raising=False)
+        monkeypatch.delenv("REGISTRY_TOKEN", raising=False)
+
+        result = runner.invoke(publish_compose.app, ["--plan"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == []
+
+    def test_section_without_variants_plans_one_bare_leg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _write_config(
+            tmp_path,
+            {
+                "publish-compose": {
+                    "repository": REPOSITORY,
+                    "artifact": "livekit-tier",
+                    "files": ["compose.yml"],
+                }
+            },
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("REGISTRY_USERNAME", raising=False)
+        monkeypatch.delenv("REGISTRY_TOKEN", raising=False)
+
+        result = runner.invoke(publish_compose.app, ["--plan"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == [{}]
+
+    def test_declared_variants_plan_one_leg_each(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        _write_config(
+            tmp_path,
+            {
+                "publish-compose": {
+                    "repository": REPOSITORY,
+                    "artifact": "stack",
+                    "files": ["compose.{gpu}.yml"],
+                    "variants": ["cuda", "rocm"],
+                }
+            },
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("REGISTRY_USERNAME", raising=False)
+        monkeypatch.delenv("REGISTRY_TOKEN", raising=False)
+
+        result = runner.invoke(publish_compose.app, ["--plan"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == [{"variant": "cuda"}, {"variant": "rocm"}]
