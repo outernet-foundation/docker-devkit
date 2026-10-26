@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 
 import typer
-from bashrun.bash import bash
+from bashrun.bash import bash, bash_check
 
 from .config import MirrorConfig, load_config
 from .documents import parse_bake
 from .image_refs import bake_base_image_refs
-from .lifecycle import MANIFEST_PATH
+from .lifecycle import LOCK_PATH, MANIFEST_PATH, parse_env_file
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
@@ -26,6 +26,8 @@ def mirror() -> None:
 
     manifest = root / MANIFEST_PATH
     declared = bake_base_image_refs(parse_bake(manifest)) if manifest.exists() else []
+    lock_file = root / LOCK_PATH
+    lock_entries = parse_env_file(lock_file) if lock_file.exists() else {}
     targets = sorted(declared, key=lambda occurrence: occurrence.reference)
     charts = (
         sorted(devkit.generate_score.charts, key=lambda chart: chart.ref) if devkit.generate_score is not None else []
@@ -36,14 +38,22 @@ def mirror() -> None:
     bash(f"curl -fsSLO https://github.com/google/go-containerregistry/releases/download/{CRANE_VERSION}/{archive}")
     bash(f"{sudo}tar -xzf {archive} -C /usr/local/bin crane")
     Path(archive).unlink()
-    references = [occurrence.reference for occurrence in targets] + [
-        chart.ref.removeprefix("oci://") for chart in charts
-    ]
-    for reference in references:
+    mirror_targets = [(occurrence.reference, lock_entries.get(occurrence.name)) for occurrence in targets]
+    for chart in charts:
+        chart_reference = chart.ref.removeprefix("oci://")
+        mirror_targets.append((chart_reference, mirrored_ref(chart_reference, config.prefix)))
+    copied = 0
+    already_present = 0
+    for reference, presence in mirror_targets:
         destination = mirrored_ref(reference, config.prefix)
+        if presence is not None and bash_check(f"crane digest {presence}"):
+            print(f"Already mirrored {presence}")
+            already_present += 1
+            continue
         print(f"Mirror {reference} -> {destination}")
         bash(f"crane copy {reference} {destination}")
-    print(f"Mirrored references: {len(references)}")
+        copied += 1
+    print(f"Mirrored references: {copied} copied, {already_present} already present")
 
 
 def load_mirror_config(root: Path) -> MirrorConfig | None:
