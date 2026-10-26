@@ -335,23 +335,6 @@ def generate_k8s(
             output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in chart_blocks),
         )
 
-    # Vendored third-party manifests ride in as committed multi-document files: upstream
-    # distributions without an OCI chart (KEDA ships GitHub-release YAML) still reach the
-    # artifact with zero generation-time fetching, then flow through the sort below.
-    for vendored in config.vendored_manifests:
-        vendored_path = root / vendored
-        if not vendored_path.is_file():
-            raise RuntimeError(f"{vendored_path.as_posix()}: declared vendored manifest does not exist")
-        blocks = [
-            block for block in re.split(r"(?m)^---$\n", vendored_path.read_text(encoding="utf-8")) if block.strip()
-        ]
-        if not blocks:
-            raise RuntimeError(f"{vendored_path.as_posix()}: declared vendored manifest carries no documents")
-        write_generated_file(
-            output_path,
-            output_path.read_text(encoding="utf-8") + "".join(f"---\n{block}" for block in blocks),
-        )
-
     # Sort documents by kind, namespace, and name, since score-k8s emits in randomised map order.
     documents = [block for block in re.split(r"(?m)^---$\n", output_path.read_text(encoding="utf-8")) if block.strip()]
     decorated: list[tuple[str, str, str, int, str]] = []

@@ -359,39 +359,3 @@ def test_gpu_variants_require_gpu_token_in_compose_output() -> None:
 
     assert config.gpu_variants == ["cuda", "rocm"]
     assert config.k8s_gpu_variant == "cuda"
-
-
-def test_vendored_manifests_append_into_the_sorted_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    vendor_directory = tmp_path / "stack/score/k8s/vendor"
-    vendor_directory.mkdir(parents=True)
-    (vendor_directory / "keda.yaml").write_text(
-        "---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: keda\n---\n"
-        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: keda-operator\n",
-        encoding="utf-8",
-    )
-    output = Path("stack/generated/k8s/manifests.yaml")
-    config = ScoreConfig.model_validate({
-        **CONFIG_BASE,
-        "workloads": [],
-        "vendored_manifests": ["stack/score/k8s/vendor/keda.yaml"],
-    })
-
-    _generate_with_chart(monkeypatch, tmp_path, config, {})
-
-    text = (tmp_path / output).read_text(encoding="utf-8")
-    assert [document["kind"] for document in yaml.safe_load_all(text) if document] == [
-        "ConfigMap",
-        "Deployment",
-        "Namespace",
-    ]
-
-
-def test_missing_vendored_manifest_fails_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = ScoreConfig.model_validate({
-        **CONFIG_BASE,
-        "workloads": [],
-        "vendored_manifests": ["stack/score/k8s/vendor/absent.yaml"],
-    })
-
-    with pytest.raises(RuntimeError, match=r"absent\.yaml"):
-        _generate_with_chart(monkeypatch, tmp_path, config, {})

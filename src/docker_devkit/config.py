@@ -81,7 +81,6 @@ class ScoreConfig(BaseModel):
     publishes: list[str] = Field(default_factory=list)
     gpu_variants: list[str] = Field(default_factory=list)
     k8s_gpu_variant: str = ""
-    vendored_manifests: list[Path] = Field(default_factory=list)
     secrets: SecretsConfig | None = None
     charts: list[ChartConfig] = Field(default_factory=list)
     helm_version: str = ""
