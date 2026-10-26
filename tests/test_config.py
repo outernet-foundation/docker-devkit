@@ -5,7 +5,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from docker_devkit.config import DEV_SENTINEL, load_config
+from docker_devkit.config import DEV_SENTINEL, LifecycleFileRule, load_config
 
 
 def write_config(tmp_path: Path, payload: dict[str, object]) -> None:
@@ -126,6 +126,58 @@ def test_load_config_loads_lifecycle_and_mirror(tmp_path: Path) -> None:
     assert config.mirror is not None
     assert config.mirror.prefix == "ghcr.io/outernet-foundation/mirror"
     assert config.generate_score is None
+
+
+def test_lifecycle_files_accept_env_conditioned_rules_beside_plain_strings(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        {
+            "requires": ">=0.1",
+            "lifecycle": {
+                "files": [
+                    "compose.{gpu}.yaml",
+                    {"path": "compose.open.yaml", "when_env_absent": "AUTH_ISSUER_URL"},
+                    {"path": "compose.keycloak.yaml", "when_env": "AUTH_ISSUER_URL"},
+                ],
+            },
+        },
+    )
+
+    config = load_config(tmp_path)
+    assert config is not None
+
+    assert config.lifecycle is not None
+    assert config.lifecycle.files == [
+        "compose.{gpu}.yaml",
+        LifecycleFileRule(path="compose.open.yaml", when_env_absent="AUTH_ISSUER_URL"),
+        LifecycleFileRule(path="compose.keycloak.yaml", when_env="AUTH_ISSUER_URL"),
+    ]
+
+
+def test_lifecycle_file_rule_rejects_both_polarities(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        {
+            "requires": ">=0.1",
+            "lifecycle": {"files": [{"path": "compose.yml", "when_env": "A", "when_env_absent": "B"}]},
+        },
+    )
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        load_config(tmp_path)
+
+
+def test_lifecycle_file_rule_rejects_unknown_keys(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        {
+            "requires": ">=0.1",
+            "lifecycle": {"files": [{"path": "compose.yml", "when_env": "A", "unless_env": "B"}]},
+        },
+    )
+
+    with pytest.raises(ValidationError):
+        load_config(tmp_path)
 
 
 def test_load_config_loads_generate_score_section(tmp_path: Path) -> None:

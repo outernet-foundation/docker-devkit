@@ -9,7 +9,7 @@ import typer
 from bashrun.bash import CalledProcessError, bash_handoff, bash_output
 
 from .build_docker import run_build
-from .config import load_config
+from .config import LifecycleConfig, LifecycleFileRule, load_config
 from .documents import compute_service_shas, parse_bake
 from .lifecycle import (
     DEFAULT_COMPOSE_FILE,
@@ -52,7 +52,7 @@ def up(
     ),
 ) -> None:
     root = Path.cwd()
-    manifest, compose_prefix = _compose_invocation(root, gpu, include_dev=dev, require_dev=dev)
+    manifest, compose_prefix = _compose_invocation(root, gpu, include_dev=dev, require_dev=dev, apply_conditions=True)
 
     if build and manifest is None:
         raise typer.BadParameter("--build requires an image manifest (workloads/images.yml)")
@@ -72,8 +72,7 @@ def up(
 
     # compose ignores COMPOSE_PROFILES whenever a --profile flag is present, so forward the
     # selection explicitly; shell env wins over .env, comma-split and deduplicated.
-    file_values = parse_env_file(ENV_FILE)
-    raw_profiles = environ.get("COMPOSE_PROFILES") or file_values.get("COMPOSE_PROFILES", "")
+    raw_profiles = _merged_env(root).get("COMPOSE_PROFILES", "")
     profiles: list[str] = []
     for entry in raw_profiles.split(","):
         profile = entry.strip()
@@ -106,8 +105,9 @@ def down(
     gpu: Annotated[Gpu, typer.Option("--gpu", help="auto|cuda|rocm|none")] = "auto",
 ) -> None:
     root = Path.cwd()
-    # Always layer the dev overlay so a prior --dev bring-up tears down too
-    _, compose_prefix = _compose_invocation(root, gpu, include_dev=True, require_dev=False)
+    # Always layer the dev overlay so a prior --dev bring-up tears down too, and ignore
+    # file conditions so teardown covers prior bring-ups under a different selection
+    _, compose_prefix = _compose_invocation(root, gpu, include_dev=True, require_dev=False, apply_conditions=False)
     # Activate every declared profile so teardown covers prior bring-ups under a different selection
     profile_flags = "".join(f"--profile {profile} " for profile in enumerate_profiles(compose_prefix))
     command = f"{compose_prefix} {profile_flags}down --remove-orphans"
@@ -117,7 +117,9 @@ def down(
     bash_handoff(command)
 
 
-def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev: bool) -> tuple[Path | None, str]:
+def _compose_invocation(
+    root: Path, gpu: Gpu, *, include_dev: bool, require_dev: bool, apply_conditions: bool
+) -> tuple[Path | None, str]:
     # Run the shared preamble: enforce the declaration, refuse a missing .env or image lock,
     # resolve the gpu, inject tree-sha tags, and assemble the compose command prefix.
     devkit = load_config(root)
@@ -149,9 +151,10 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
     if lifecycle_config is None:
         compose_files = [DEFAULT_COMPOSE_FILE]
     else:
+        environment = _merged_env(root) if apply_conditions else None
         compose_files = [
             Path(entry.format(gpu=gpu))
-            for entry in lifecycle_config.files
+            for entry in _declared_paths(lifecycle_config, environment)
             if gpu != "none" or GPU_PLACEHOLDER not in entry
         ]
         if include_dev and lifecycle_config.dev_file is not None:
@@ -162,6 +165,34 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
     prefix = f"docker compose {files_args} --project-directory {root} --env-file .env --env-file {lock_file}"
     return manifest, prefix
+
+
+def _declared_paths(lifecycle_config: LifecycleConfig, environment: dict[str, str] | None) -> list[str]:
+    # environment None selects every declared file (down's teardown superset); otherwise a
+    # rule entry rides only when its condition holds in the merged shell-over-.env view.
+    paths: list[str] = []
+    for entry in lifecycle_config.files:
+        if isinstance(entry, LifecycleFileRule):
+            if environment is not None and not _rule_active(entry, environment):
+                continue
+            paths.append(entry.path)
+        else:
+            paths.append(entry)
+    return paths
+
+
+def _rule_active(rule: LifecycleFileRule, environment: dict[str, str]) -> bool:
+    if rule.when_env is not None:
+        return bool(environment.get(rule.when_env))
+    if rule.when_env_absent is not None:
+        return not environment.get(rule.when_env_absent)
+    return True
+
+
+def _merged_env(root: Path) -> dict[str, str]:
+    values = parse_env_file(root / ENV_FILE)
+    values.update(environ)
+    return values
 
 
 def _mirror_probe_message(value: str) -> str | None:

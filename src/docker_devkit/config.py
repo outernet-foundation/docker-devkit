@@ -12,10 +12,26 @@ DEFAULT_CONFIG_PATH = Path("docker-devkit.yaml")
 DEV_SENTINEL = "0.0.0.dev0"
 
 
+class LifecycleFileRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    when_env: str | None = None
+    when_env_absent: str | None = None
+
+    @model_validator(mode="after")
+    def _single_polarity(self) -> Self:
+        if not self.path:
+            raise ValueError("file path must be non-empty")
+        if self.when_env and self.when_env_absent:
+            raise ValueError("when_env and when_env_absent are mutually exclusive; declare one polarity")
+        return self
+
+
 class LifecycleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    files: list[str] = Field(default_factory=list)
+    files: list[str | LifecycleFileRule] = Field(default_factory=list)
     dev_file: str | None = None
 
 

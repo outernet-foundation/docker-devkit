@@ -29,7 +29,9 @@ def _write_config(root: Path, sections: dict[str, object] | None = None) -> None
     )
 
 
-def _stub_invocation(root: Path, gpu: str, *, include_dev: bool, require_dev: bool) -> tuple[Path | None, str]:
+def _stub_invocation(
+    root: Path, gpu: str, *, include_dev: bool, require_dev: bool, apply_conditions: bool
+) -> tuple[Path | None, str]:
     return None, COMPOSE_PREFIX
 
 
@@ -39,6 +41,10 @@ def _defined_profiles(compose_prefix: str) -> list[str]:
 
 def _rathole_profiles(compose_prefix: str) -> list[str]:
     return ["tunnel-rathole"]
+
+
+def _no_profiles(compose_prefix: str) -> list[str]:
+    return []
 
 
 def _probe_present(command: str) -> str:
@@ -147,6 +153,119 @@ class TestProfileForwarding:
         assert result.exit_code != 0
         assert isinstance(result.exception, RuntimeError)
         assert "ghost" in str(result.exception)
+
+
+class TestConditionalFiles:
+    CONDITION_VARS = ("AUTH_ISSUER_URL", "NGROK_AUTHTOKEN")
+
+    def _prepare(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        files: list[object],
+        env_text: str = "",
+    ) -> HandoffRecorder:
+        for var in self.CONDITION_VARS:
+            monkeypatch.delenv(var, raising=False)
+        _write_config(tmp_path, {"lifecycle": {"files": files}})
+        (tmp_path / ".env").write_text(env_text, encoding="utf-8")
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.lock").write_text("", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(compose, "enumerate_profiles", _no_profiles)
+        recorder = HandoffRecorder()
+        monkeypatch.setattr(compose, "bash_handoff", recorder.run)
+        return recorder
+
+    def test_when_env_rule_rides_only_when_the_variable_is_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        recorder = self._prepare(
+            tmp_path,
+            monkeypatch,
+            [
+                "compose.yml",
+                {"path": "compose.keycloak.yaml", "when_env": "AUTH_ISSUER_URL"},
+            ],
+        )
+
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[-1].startswith("docker compose -f compose.yml ")
+
+        monkeypatch.setenv("AUTH_ISSUER_URL", "https://idp.example/realms/dev")
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[-1].startswith("docker compose -f compose.yml -f compose.keycloak.yaml ")
+
+    def test_when_env_absent_rule_rides_only_when_the_variable_is_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        recorder = self._prepare(
+            tmp_path,
+            monkeypatch,
+            [{"path": "compose.open.yaml", "when_env_absent": "AUTH_ISSUER_URL"}, "compose.tunnel.yaml"],
+        )
+        monkeypatch.setenv("AUTH_ISSUER_URL", "https://idp.example/realms/dev")
+
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[0].startswith("docker compose -f compose.tunnel.yaml ")
+
+        monkeypatch.delenv("AUTH_ISSUER_URL")
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[-1].startswith("docker compose -f compose.open.yaml -f compose.tunnel.yaml ")
+
+    def test_env_file_satisfies_a_condition_and_shell_env_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        recorder = self._prepare(
+            tmp_path,
+            monkeypatch,
+            [{"path": "compose.keycloak.yaml", "when_env": "AUTH_ISSUER_URL"}],
+            env_text="AUTH_ISSUER_URL=https://idp.example/realms/dev\n",
+        )
+
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[0].startswith("docker compose -f compose.keycloak.yaml ")
+
+        monkeypatch.setenv("AUTH_ISSUER_URL", "")
+        result = runner.invoke(compose.up_app, ["--gpu", "cuda"])
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+        assert "No compose files declared" in str(result.exception)
+
+    def test_conditions_are_ignored_for_teardown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        recorder = self._prepare(
+            tmp_path,
+            monkeypatch,
+            [
+                "compose.yml",
+                {"path": "compose.keycloak.yaml", "when_env": "AUTH_ISSUER_URL"},
+                {"path": "compose.open.yaml", "when_env_absent": "AUTH_ISSUER_URL"},
+            ],
+        )
+
+        result = runner.invoke(compose.down_app, ["--gpu", "cuda"])
+
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[0].startswith(
+            "docker compose -f compose.yml -f compose.keycloak.yaml -f compose.open.yaml "
+        )
+
+    def test_gpu_none_still_drops_templated_rule_paths(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        recorder = self._prepare(
+            tmp_path,
+            monkeypatch,
+            [
+                {"path": "compose.{gpu}.yaml", "when_env": "AUTH_ISSUER_URL"},
+                "compose.gateway.yaml",
+            ],
+        )
+        monkeypatch.setenv("AUTH_ISSUER_URL", "https://idp.example/realms/dev")
+
+        result = runner.invoke(compose.up_app, ["--gpu", "none"])
+
+        assert result.exit_code == 0, result.output
+        assert recorder.commands[0].startswith("docker compose -f compose.gateway.yaml ")
 
 
 class TestMirroredLockEnforcement:
