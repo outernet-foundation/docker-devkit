@@ -19,6 +19,7 @@ from .image_refs import resolve_remote_digest
 from .lifecycle import GPU_PLACEHOLDER, LOCK_PATH, parse_env_file, require_manifest
 
 _VAR_PATTERN = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)(:[?\-+][^}]*)?\}")
+STUB_VALUE = "publish-stub"
 
 
 class ComposeConfig(BaseModel):
@@ -94,15 +95,17 @@ def publish_compose(
         baked_directory = Path(baked_directory_string)
         baked_paths = bake_sources(baked_directory, source_names, substitutions)
 
-        # Publish validates ${VAR} holes against the environment; consumer knobs stay holes in the
-        # artifact, so empty stubs exist only to satisfy that validation.
+        # Publish validates ${VAR} holes against the environment but embeds the file
+        # uninterpolated (verified against a live registry — no env value enters the
+        # artifact), so stubs exist only to satisfy that validation; they must be
+        # non-empty because compose's ${VAR:?err} rejects unset OR empty.
         unresolved = {
             match.group(1)
             for baked_path in baked_paths
             for match in _VAR_PATTERN.finditer(baked_path.read_text(encoding="utf-8"))
         } - substitutions.keys()
         for name in unresolved:
-            os.environ.setdefault(name, "")
+            os.environ.setdefault(name, STUB_VALUE)
 
         finalize_baked(baked_paths, config.repository)
 

@@ -257,7 +257,7 @@ class TestPublishComposeVerb:
         assert document["services"]["ingress"]["image"] == CADDY_LOCK_REF
         assert document["services"]["livekit-token"]["environment"]["LIVEKIT_API_KEY"] == "${LIVEKIT_API_KEY:?err}"
         assert document["configs"]["caddyfile"] == {"content": "reverse_proxy {$$UPSTREAM}\n"}
-        assert os.environ.get("LIVEKIT_API_KEY") == ""
+        assert os.environ.get("LIVEKIT_API_KEY") == publish_compose.STUB_VALUE
         monkeypatch.delenv("LIVEKIT_API_KEY", raising=False)
 
     def test_publishes_variant_leg_with_suffixed_artifact_and_gpu_files(
