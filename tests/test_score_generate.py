@@ -5,11 +5,13 @@ import yaml
 from pydantic import ValidationError
 
 from docker_devkit import score_generate
-from docker_devkit.config import ChartConfig, SecretsConfig
+from docker_devkit.config import ChartConfig, SecretsConfig, SeamConfig
 from docker_devkit.score_generate import (
     BindVolume,
     ComposeService,
     ScoreConfig,
+    merge_override,
+    compose_seams,
     generate_k8s,
     tool_requirements,
     write_generated_file,
@@ -22,6 +24,12 @@ CONFIG_BASE = {
     "local_storage_class": "local-path",
 }
 DIGEST = "sha256:" + "a" * 64
+
+SEAM_BASE = {
+    "name": "core",
+    "output": "stack/generated/compose/compose.{gpu}.yaml",
+    "workloads": ["api.yaml"],
+}
 
 
 def test_score_config_rejects_unknown_keys() -> None:
@@ -329,33 +337,134 @@ def test_values_lock_markers_resolve_after_includes(tmp_path: Path, monkeypatch:
     assert resolved["image"]["digest"] == DIGEST
 
 
-def test_gpu_variants_require_gpu_token_in_compose_output() -> None:
+def test_seam_requires_gpu_token_when_variants_declared() -> None:
     with pytest.raises(ValidationError, match=r"\{gpu\} token"):
-        ScoreConfig.model_validate({**CONFIG_BASE, "gpu_variants": ["cuda", "rocm"]})
+        SeamConfig.model_validate({**SEAM_BASE, "gpu_variants": ["cuda", "rocm"], "output": "stack/compose.yaml"})
+
+
+def test_seam_rejects_gpu_token_without_variants() -> None:
+    with pytest.raises(ValidationError, match="nothing to substitute"):
+        SeamConfig.model_validate(SEAM_BASE)
 
     with pytest.raises(ValidationError, match="nothing to substitute"):
-        ScoreConfig.model_validate({**CONFIG_BASE, "compose_output": "stack/generated/compose/compose.{gpu}.yaml"})
-
-    with pytest.raises(ValidationError, match="non-empty"):
-        ScoreConfig.model_validate({
-            **CONFIG_BASE,
-            "compose_output": "stack/generated/compose/compose.{gpu}.yaml",
-            "gpu_variants": ["cuda", ""],
+        SeamConfig.model_validate({
+            "name": "tunnel",
+            "output": "stack/compose.yaml",
+            "workloads": ["tunnel.yaml"],
+            "patch_templates": ["compose/patches/gpu-{gpu}.tpl"],
         })
+
+
+def test_seam_rejects_empty_and_duplicate_variant_names() -> None:
+    with pytest.raises(ValidationError, match="non-empty"):
+        SeamConfig.model_validate({**SEAM_BASE, "gpu_variants": ["cuda", ""]})
 
     with pytest.raises(ValidationError, match="unique"):
-        ScoreConfig.model_validate({
-            **CONFIG_BASE,
-            "compose_output": "stack/generated/compose/compose.{gpu}.yaml",
-            "gpu_variants": ["cuda", "cuda"],
+        SeamConfig.model_validate({**SEAM_BASE, "gpu_variants": ["cuda", "cuda"]})
+
+
+def test_seam_rejects_empty_workloads_and_unknown_override_targets() -> None:
+    with pytest.raises(ValidationError, match="no workloads"):
+        SeamConfig.model_validate({"name": "empty", "output": "stack/compose.yaml", "workloads": []})
+
+    with pytest.raises(ValidationError, match="does not carry"):
+        SeamConfig.model_validate({
+            "name": "gateway-open",
+            "output": "stack/compose.yaml",
+            "workloads": ["gateway.yaml"],
+            "overrides": {"api.yaml": "compose/overrides/open.yaml"},
         })
 
+
+def test_score_config_rejects_duplicate_seam_names_and_colliding_outputs() -> None:
+    with pytest.raises(ValidationError, match="seam names must be unique"):
+        ScoreConfig.model_validate({
+            **CONFIG_BASE,
+            "seams": [
+                {"name": "core", "output": "stack/a.yaml", "workloads": ["api.yaml"]},
+                {"name": "core", "output": "stack/b.yaml", "workloads": ["api.yaml"]},
+            ],
+        })
+
+    with pytest.raises(ValidationError, match="collide"):
+        ScoreConfig.model_validate({
+            **CONFIG_BASE,
+            "seams": [
+                {"name": "one", "output": "stack/same.{gpu}.yaml", "workloads": ["a.yaml"], "gpu_variants": ["cuda"]},
+                {"name": "two", "output": "stack/same.{gpu}.yaml", "workloads": ["b.yaml"], "gpu_variants": ["cuda"]},
+            ],
+        })
+
+
+def test_compose_seams_flatten_per_output_file() -> None:
     config = ScoreConfig.model_validate({
         **CONFIG_BASE,
-        "compose_output": "stack/generated/compose/compose.{gpu}.yaml",
-        "gpu_variants": ["cuda", "rocm"],
         "k8s_gpu_variant": "cuda",
+        "seams": [
+            {
+                "name": "core",
+                "output": "stack/generated/compose/core.{gpu}.yaml",
+                "workloads": ["api.yaml", "localizer.yaml"],
+                "gpu_variants": ["cuda", "rocm"],
+                "provisioners": ["compose/config.yaml"],
+                "patch_templates": ["compose/patches/gpu-{gpu}.tpl"],
+                "publishes": ["8000:api:8000"],
+            },
+            {
+                "name": "gateway-open",
+                "output": "stack/generated/compose/gateway-open.yaml",
+                "workloads": ["gateway.yaml"],
+                "overrides": {"gateway.yaml": "compose/overrides/gateway-open.yaml"},
+            },
+        ],
     })
 
-    assert config.gpu_variants == ["cuda", "rocm"]
-    assert config.k8s_gpu_variant == "cuda"
+    [core_cuda, core_rocm, gateway_open] = compose_seams(config)
+
+    assert core_cuda.name == "core-cuda"
+    assert core_cuda.variant == "cuda"
+    assert core_cuda.output == Path("stack/generated/compose/core.cuda.yaml")
+    assert core_cuda.patch_templates == [Path("compose/patches/gpu-cuda.tpl")]
+    assert core_rocm.name == "core-rocm"
+    assert core_rocm.output == Path("stack/generated/compose/core.rocm.yaml")
+    assert core_rocm.patch_templates == [Path("compose/patches/gpu-rocm.tpl")]
+    assert gateway_open.name == "gateway-open"
+    assert gateway_open.variant is None
+    assert gateway_open.output == Path("stack/generated/compose/gateway-open.yaml")
+    assert gateway_open.overrides == {"gateway.yaml": "compose/overrides/gateway-open.yaml"}
+    assert gateway_open.publishes == []
+
+
+def testmerge_override_deletes_nulls_and_merges_mappings() -> None:
+    workload = {
+        "containers": {"gateway": {"image": "reg/gateway:1", "files": {"/a.conf": {"content": "x"}}}},
+        "resources": {"auth": {"type": "oidc-issuer"}, "config": {"type": "placeframe-config"}},
+    }
+
+    merged = merge_override(
+        workload, {"containers": {"gateway": {"files": None}}, "resources": {"auth": None}}, "gateway.yaml"
+    )
+
+    assert "files" not in merged["containers"]["gateway"]
+    assert merged["containers"]["gateway"]["image"] == "reg/gateway:1"
+    assert "auth" not in merged["resources"]
+    assert merged["resources"]["config"] == {"type": "placeframe-config"}
+
+
+def testmerge_override_replaces_scalars_and_lists() -> None:
+    workload = {"containers": {"gateway": {"image": "reg/gateway:1", "command": ["a"]}}}
+
+    merged = merge_override(
+        workload, {"containers": {"gateway": {"image": "reg/gateway:2", "command": ["b", "c"]}}}, "gateway.yaml"
+    )
+
+    assert merged["containers"]["gateway"]["image"] == "reg/gateway:2"
+    assert merged["containers"]["gateway"]["command"] == ["b", "c"]
+
+
+def testmerge_override_rejects_non_mapping_shapes() -> None:
+    with pytest.raises(SystemExit, match="mapping"):
+        merge_override({"containers": {}}, ["not-a-map"], "gateway.yaml")
+
+    with pytest.raises(SystemExit, match="mapping"):
+        merge_override(None, {"containers": None}, "gateway.yaml")

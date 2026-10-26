@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, Literal, NamedTuple, Self
+from typing import Annotated, Any, Literal, NamedTuple, Self
 
 import typer
 import yaml
@@ -35,6 +35,17 @@ DECLARED_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 COMPOSE_HOLE = re.compile(r"(\$+)\{([A-Z][A-Z0-9_]*)(?::[^{}]*)?\}")
 
 Target = Literal["both", "compose", "k8s"]
+
+
+class ComposeSeam(NamedTuple):
+    name: str
+    variant: str | None
+    output: Path
+    workloads: list[str]
+    overrides: dict[str, str]
+    provisioners: list[str]
+    patch_templates: list[Path]
+    publishes: list[str]
 
 
 class ManifestMetadata(BaseModel):
@@ -196,19 +207,39 @@ def tool_requirements(config: ScoreConfig, target: Target) -> list[ToolRequireme
     return requirements
 
 
+def compose_seams(config: ScoreConfig) -> list[ComposeSeam]:
+    # Flatten the declared seams into one entry per output file (seam x gpu variant), with
+    # the {gpu} token in outputs and patch-template names already resolved.
+    resolved: list[ComposeSeam] = []
+    for seam in config.seams:
+        for variant in seam.gpu_variants or [None]:
+            resolved.append(
+                ComposeSeam(
+                    name=f"{seam.name}-{variant}" if variant is not None else seam.name,
+                    variant=variant,
+                    output=_gpu_substituted(seam.output, variant),
+                    workloads=list(seam.workloads),
+                    overrides=dict(seam.overrides),
+                    provisioners=list(seam.provisioners),
+                    patch_templates=[_gpu_substituted(Path(name), variant) for name in seam.patch_templates],
+                    publishes=list(seam.publishes),
+                )
+            )
+    return resolved
+
+
 def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) -> None:
+    if not config.seams:
+        raise RuntimeError("the compose target requires seams in docker-devkit.yaml's generate-score section")
     score_dir = root / config.score_dir
     score_state = score_dir / ".score-compose"
 
-    with compiled_provisioners(score_dir, config.compose_provisioners, root, images) as provisioners:
-        # One compose per GPU variant: the {gpu} token in compose_output and in patch-template
-        # names resolves per variant, GPU_VARIANT feeds workload-file ${GPU_VARIANT} image
-        # placeholders, and the state dir is re-created per variant so a variant's patch
+    for seam in compose_seams(config):
+        _set_gpu_variant(seam.variant)
+        # The state dir is re-created per seam so one seam's provisioners and patch
         # templates never leak into another's output.
-        for variant in config.gpu_variants or [None]:
-            _set_gpu_variant(variant)
-            output = root / _gpu_substituted(config.compose_output, variant)
-            templates = [score_dir / _gpu_substituted(Path(name), variant) for name in config.compose_patch_templates]
+        with compiled_provisioners(score_dir, seam.provisioners, root, images) as provisioners:
+            templates = [score_dir / template for template in seam.patch_templates]
             shutil.rmtree(score_state, ignore_errors=True)
             _init_state(
                 f"score-compose init --project {config.project_name} --no-sample",
@@ -217,9 +248,10 @@ def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) ->
                 working_dir=score_dir,
             )
 
+            output = root / seam.output
             output.parent.mkdir(parents=True, exist_ok=True)
-            publishes = "".join(f" --publish {publish}" for publish in config.publishes)
-            with _rendered_workloads(root, config) as workloads:
+            publishes = "".join(f" --publish {publish}" for publish in seam.publishes)
+            with _rendered_workloads(root, config, seam.workloads, seam.overrides) as workloads:
                 bash(
                     f"score-compose generate {workloads} --output {output.as_posix()}{publishes}",
                     cwd=score_dir,
@@ -229,7 +261,7 @@ def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) ->
             document = yaml.safe_load(output.read_text(encoding="utf-8"))
             parsed = ComposeDocument.model_validate(document)
             contents: dict[str, dict[str, str]] = {}
-            resolved: dict[str, Path] = {}
+            resolved_paths: dict[str, Path] = {}
             for name, service in (parsed.services or {}).items():
                 binds = [volume for volume in service.volumes or [] if isinstance(volume, BindVolume)]
                 if not binds:
@@ -243,9 +275,9 @@ def generate_compose(root: Path, config: ScoreConfig, images: dict[str, str]) ->
                         raise SystemExit(f"absolute bind source {bind.source} cannot be inlined hermetically")
                     else:
                         path = root / bind.source
-                    if resolved.setdefault(path.name, path) != path:
+                    if resolved_paths.setdefault(path.name, path) != path:
                         raise SystemExit(
-                            f"bind sources {resolved[path.name]} and {path} collide on config name {path.name}"
+                            f"bind sources {resolved_paths[path.name]} and {path} collide on config name {path.name}"
                         )
                     contents[path.name] = {"content": path.read_text(encoding="utf-8").replace("$", "$$")}
                     references.append({"source": path.name, "target": bind.target})
@@ -278,6 +310,23 @@ def _set_gpu_variant(variant: str | None) -> None:
         os.environ["GPU_VARIANT"] = variant
 
 
+def merge_override(document: Any, override: Any, name: str) -> dict[Any, Any]:
+    # Recursive merge with removal semantics: a null value deletes the key, nested mappings
+    # merge, everything else replaces wholesale. Removal is what seam overrides exist for —
+    # score's own override files are additive and cannot strip a workload back.
+    if not is_mapping(document) or not is_mapping(override):
+        raise SystemExit(f"{name}: a seam override must be a mapping merged over the workload's mapping")
+    merged: dict[Any, Any] = {**document}
+    for key, value in override.items():
+        if value is None:
+            merged.pop(key, None)
+        elif is_mapping(merged.get(key)) and is_mapping(value):
+            merged[key] = merge_override(merged[key], value, name)
+        else:
+            merged[key] = value
+    return merged
+
+
 def generate_k8s(
     root: Path, config: ScoreConfig, output: Path, mirror_prefix: str | None, images: dict[str, str]
 ) -> None:
@@ -296,7 +345,7 @@ def generate_k8s(
             working_dir=state_dir.parent,
         )
 
-        with _rendered_workloads(root, config) as workloads:
+        with _rendered_workloads(root, config, config.workloads, {}) as workloads:
             bash(f"score-k8s generate {workloads} --output {output_path.as_posix()}", cwd=state_dir.parent)
 
     # Render charts through helm template into the same sorted documents, pulling each
@@ -398,8 +447,8 @@ def enforce_secret_contract(
 
     if target in ("both", "compose"):
         consumed: set[str] = set()
-        for variant in config.gpu_variants or [None]:
-            artifact = root / _gpu_substituted(config.compose_output, variant)
+        for seam in compose_seams(config):
+            artifact = root / seam.output
             for match in COMPOSE_HOLE.finditer(artifact.read_text(encoding="utf-8")):
                 if len(match.group(1)) % 2 == 1:
                     consumed.add(match.group(2))
@@ -451,13 +500,31 @@ def _init_state(
 
 
 @contextmanager
-def _rendered_workloads(root: Path, config: ScoreConfig) -> Generator[str]:
-    # Expand ${ALL_CAPS} placeholders into tempdir copies, since Score documents cannot read the environment.
+def _rendered_workloads(
+    root: Path, config: ScoreConfig, workloads: list[str], overrides: dict[str, str]
+) -> Generator[str]:
+    # Expand ${ALL_CAPS} placeholders into tempdir copies, since Score documents cannot read the
+    # environment. Seam overrides merge onto the parsed workload first (null deletes a key), and
+    # ${VAR:?err}/${VAR:-} runtime holes never match the bare-placeholder pattern, so they ride
+    # through to compose interpolation untouched.
     with TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
 
-        for name in config.workloads:
-            source = (root / config.score_dir / name).read_text(encoding="utf-8")
+        for name in workloads:
+            source_path = root / config.score_dir / name
+            try:
+                document = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+            except yaml.YAMLError as error:
+                raise SystemExit(f"{name}: invalid YAML: {error}") from error
+            override = overrides.get(name)
+            if override is not None:
+                override_path = root / config.score_dir / override
+                try:
+                    override_document = yaml.safe_load(override_path.read_text(encoding="utf-8"))
+                except yaml.YAMLError as error:
+                    raise SystemExit(f"{override}: invalid YAML: {error}") from error
+                document = merge_override(document, override_document, name)
+            source = yaml.safe_dump(document, sort_keys=False, width=1000)
             parts: list[str] = []
             index = 0
             for match in PLACEHOLDER.finditer(source):
@@ -471,7 +538,7 @@ def _rendered_workloads(root: Path, config: ScoreConfig) -> Generator[str]:
             parts.append(source[index:])
             (directory / name).write_text("".join(parts), "utf-8")
 
-        yield " ".join((directory / name).as_posix() for name in config.workloads)
+        yield " ".join((directory / name).as_posix() for name in workloads)
 
 
 def write_generated_file(path: Path, text: str) -> None:
