@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import re
 from pathlib import Path
 from typing import Self
 
@@ -30,6 +31,39 @@ class MirrorConfig(BaseModel):
         if not prefix or prefix.endswith("/"):
             raise ValueError("mirror prefix must be non-empty and carry no trailing slash")
         return prefix
+
+
+class PublishComposeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str
+    artifact: str
+    files: list[str] = Field(min_length=1)
+    variants: list[str] = Field(default_factory=list)
+
+    @field_validator("repository")
+    @classmethod
+    def _require_registry_repository(cls, repository: str) -> str:
+        host, separator, path = repository.partition("/")
+        if not separator or not host or not path or repository.endswith("/"):
+            raise ValueError(
+                "repository must be registry-host/repository-path with no trailing slash (ghcr.io/org/repo)"
+            )
+        return repository
+
+    @field_validator("artifact")
+    @classmethod
+    def _require_oci_artifact_name(cls, artifact: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", artifact):
+            raise ValueError("artifact must be lowercase alphanumerics and dashes (an OCI repository name)")
+        return artifact
+
+    @field_validator("variants")
+    @classmethod
+    def _require_unique_variants(cls, variants: list[str]) -> list[str]:
+        if len(variants) != len(set(variants)):
+            raise ValueError("variants must be unique")
+        return variants
 
 
 class ChartConfig(BaseModel):
@@ -100,6 +134,7 @@ class DockerDevkitConfig(BaseModel):
     requires: str
     lifecycle: LifecycleConfig | None = None
     mirror: MirrorConfig | None = None
+    publish_compose: PublishComposeConfig | None = Field(default=None, alias="publish-compose")
     generate_score: ScoreConfig | None = Field(default=None, alias="generate-score")
 
     @field_validator("requires")
