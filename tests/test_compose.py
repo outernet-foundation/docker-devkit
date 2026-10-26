@@ -37,6 +37,10 @@ def _defined_profiles(compose_prefix: str) -> list[str]:
     return ["keycloak", "tunnel-ngrok"]
 
 
+def _no_profiles(compose_prefix: str) -> list[str]:
+    return []
+
+
 def _rathole_profiles(compose_prefix: str) -> list[str]:
     return ["tunnel-rathole"]
 
@@ -147,6 +151,72 @@ class TestProfileForwarding:
         assert result.exit_code != 0
         assert isinstance(result.exception, RuntimeError)
         assert "ghost" in str(result.exception)
+
+
+class TestLockRequirement:
+    def _write_lock_free_tree(self, tmp_path: Path, sections: dict[str, object] | None = None) -> None:
+        _write_config(tmp_path, sections or {"lifecycle": {"files": ["compose.yml"]}})
+        (tmp_path / ".env").write_text("PUBLIC_URL=https://example.dev\n", encoding="utf-8")
+        (tmp_path / "compose.yml").write_text("services:\n  api:\n    image: example:1\n", encoding="utf-8")
+
+    def test_manifest_without_lock_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        self._write_lock_free_tree(tmp_path)
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.yml").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(compose.down_app, [])
+
+        assert result.exit_code != 0
+        assert isinstance(result.exception, RuntimeError)
+        assert "No image lock" in str(result.exception)
+
+    def test_lock_free_repo_assembles_without_the_lock_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        self._write_lock_free_tree(tmp_path)
+        recorder = HandoffRecorder()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(compose, "enumerate_profiles", _no_profiles)
+        monkeypatch.setattr(compose, "bash_handoff", recorder.run)
+
+        result = runner.invoke(compose.down_app, ["--gpu", "none"])
+
+        assert result.exit_code == 0, result.output
+        assert recorder.commands == [
+            f"docker compose -f compose.yml --project-directory {tmp_path} --env-file .env down --remove-orphans"
+        ]
+
+    def test_present_lock_still_rides_the_prefix(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        self._write_lock_free_tree(tmp_path)
+        (tmp_path / "workloads").mkdir()
+        (tmp_path / "workloads" / "images.lock").write_text("ALPINE_IMAGE=alpine:3.20\n", encoding="utf-8")
+        recorder = HandoffRecorder()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(compose, "enumerate_profiles", _no_profiles)
+        monkeypatch.setattr(compose, "bash_handoff", recorder.run)
+
+        result = runner.invoke(compose.down_app, ["--gpu", "none"])
+
+        assert result.exit_code == 0, result.output
+        assert recorder.commands == [
+            (
+                f"docker compose -f compose.yml --project-directory {tmp_path} "
+                f"--env-file .env --env-file {tmp_path / 'workloads' / 'images.lock'} down --remove-orphans"
+            )
+        ]
+
+    def test_mirror_section_without_lock_skips_the_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        self._write_lock_free_tree(tmp_path, {"mirror": {"prefix": MIRROR_PREFIX}})
+        monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
+        recorder = HandoffRecorder()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(compose, "bash_handoff", recorder.run)
+
+        result = runner.invoke(compose.up_app, ["--gpu", "none"])
+
+        assert result.exit_code == 0, result.output
+        assert recorder.commands == [
+            f"docker compose -f compose.yml --project-directory {tmp_path} --env-file .env up --pull missing -d"
+        ]
 
 
 class TestMirroredLockEnforcement:

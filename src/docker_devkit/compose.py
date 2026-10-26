@@ -57,7 +57,7 @@ def up(
     if build and manifest is None:
         raise typer.BadParameter("--build requires an image manifest (workloads/images.yml)")
 
-    if load_mirror_config(root) is not None:
+    if load_mirror_config(root) is not None and (root / LOCK_PATH).exists():
         # Fail closed over every lock entry, distinguishing a manifest the registry truly lacks
         # (the declaring change has not been through CI's mirror job; no escape flag) from a
         # probe that failed before reaching a verdict (credentials, network, daemon availability).
@@ -135,7 +135,7 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
     if not ENV_FILE.exists():
         raise RuntimeError("No .env file found; create one first (e.g., copy .env.example)")
 
-    if not lock_file.exists():
+    if manifest is not None and not lock_file.exists():
         raise RuntimeError(
             f"No image lock at {lock_file}; run 'uv run build --lock-only' in the repo that authors the images"
         )
@@ -160,7 +160,8 @@ def _compose_invocation(root: Path, gpu: Gpu, *, include_dev: bool, require_dev:
         raise RuntimeError("No compose files declared; a builds-only repo has no stack")
 
     files_args = " ".join(f"-f {compose_file}" for compose_file in compose_files)
-    prefix = f"docker compose {files_args} --project-directory {root} --env-file .env --env-file {lock_file}"
+    lock_argument = f" --env-file {lock_file}" if lock_file.exists() else ""
+    prefix = f"docker compose {files_args} --project-directory {root} --env-file .env{lock_argument}"
     return manifest, prefix
 
 
