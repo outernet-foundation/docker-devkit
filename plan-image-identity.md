@@ -1,277 +1,407 @@
 # Image identity and versioning
 
-Pre-implementation plan, two linked initiatives: close the tree-tag input-closure
-defect in this package (Part 1), then add release version tags to images in
-github-actions-toolkit (Part 2), sequenced after Part 1. Captured from an
-investigation session on 2026-10-15; code anchors are as of that session and may
-drift. The open questions at the end must reach convergence before any of this
-is implemented.
+Pre-implementation plan, two linked initiatives: give `tree-` tags a precise,
+fail-closed input closure in this package (Part 1), then add per-service semver
+version lines to images and compose bundles in github-actions-toolkit (Part 2),
+sequenced after Part 1. Captured from investigation sessions 2026-10-15 and
+2026-10-22; all open questions are closed and the decisions are recorded at the
+end. Code anchors are as of the 2026-10-22 session and may drift.
 
-## Part 1 — `tree-` tags do not cover their input set (defect, lands first)
+## Orientation: the tagging system this completes
 
-A lock-file bump does not change any service's tree tag. That is a bug, not a
-design choice: the partition rule in `context_sha.py` is deliberate, but its
-consequence — the base-image lock and the bake manifest are invisible to every
-hash — was never weighed. This section is the full audit; the lock is one of
-several gaps, not the only one.
-
-### How the tag is computed today
-
-`compute_service_shas` (`src/docker_devkit/context_sha.py:12`) builds, per
-tagged service, a synthetic git index and writes a tree object; the pushed tag
-`tree-{hash}` is that tree hash. Input flow:
+Two tag grammars with two jobs, across three release channels:
 
 ```
-git ls-tree -r HEAD                    committed tree only
-  → .dockerignore allowlist filter     the root allowlist defines the input set
-  → partition:
-      outside workload root        → shared, in every service's hash
-      under workloads/<svc>/       → that service only
-      under workloads/, no owner   → dropped from every hash   ← the defect lives here
-  → git update-index --index-info + git write-tree
-  → env {DIR_NAME}_SHA → bake tag :${X_SHA} (and ENV-stamped inside some images)
+git tags          pr                      dev                      stable
+────────────────────────────────────────────────────────────────────────────
+release event     pr-{N}-{count}          dev-{count}              YYYY.MM.N
+                  swept at merge/close    swept at next stable     permanent
+unit version      —                       —                        {unit}-v{semver}
+                  (packages, apps today; images and bundles post-Part-2)
+
+registry          pr                      dev                      stable
+────────────────────────────────────────────────────────────────────────────
+images            tree-{hash} only        {base}-dev.{count}      semver + latest
+                  (content identity,      (post-Part-2)           (post-Part-2)
+                  all channels)
+shelf (ORAS)      sha-{full}[-{key8}]     read back for stapling  read back
+packages          —                       {base}.dev{count} /     {base}
+                                          -dev.{count}
+compose bundle    {sha} only              {base}-dev.{count}      semver
+                  (post-Part-2; branch tags retired)
 ```
 
-The workload root is the single top-level directory containing every tagged
-service's Dockerfile (`workloads/` in all three image repos). Everything directly
-under it that belongs to no service dir — `workloads/images.yml`,
-`workloads/images.lock`, plus harmless bystanders — is dropped from every hash.
+Standing principles: one ordinal (commit count at the certified head) keys
+everything per-event, so `pr-{N}-{count}` and the landing's `dev-{count}` share
+the number because they are the same bits at two lifecycle stages. The PR
+channel publishes nothing permanent anywhere — only content-keyed ephemera
+(`tree-`, `sha-`). Registry-side channel markers exist only where the registry
+forces one (npm dist-tag; image and bundle dev spellings). Post-Part-2 every
+consumable artifact type carries a per-unit semver line; the CalVer git tag
+stays the release-event grouping label.
 
-### The gap audit
+## Part 1 — docker-devkit: precise input closure for `tree-` tags
 
-Every channel that influences image bits, and whether the hash sees it:
+### The defect being fixed
 
-| # | Input channel | Seen |
-|---|---|---|
-| G1 | `workloads/images.lock` — base digests → env → `x-base-args` → `FROM` | no |
-| G2 | `workloads/images.yml` — literal args (`TORCH_DEVICE`), args wiring, `additional_contexts` edges, tags | no |
-| G3 | `additional_contexts: target:` dependencies — dependents' hashes exclude their bases' dirs (live in placeframe: reconstructor/localizer consume `neural-networks-base` builds) | no |
-| G4 | `.dockerignore` itself — defines the input set, sits outside the allowlist, edits never re-key | no |
-| G5 | Latent: a Dockerfile `COPY workloads/<other-service>/…` — allowlisted, unowned by the copying service, nothing forbids it | no |
+`compute_service_shas` (`documents.py:62`) hashes per-service synthetic git
+trees over the `.dockerignore`-allowlisted committed tree. The partition rule
+drops `workloads/images.yml`, `workloads/images.lock`, and `.dockerignore`
+from every hash, excludes `additional_contexts` dependency dirs from
+dependents' hashes, and nothing forbids a cross-service `COPY`. Concrete
+harms: a base-image bump produces a numerically different localizer with the
+same `pipeline_version` (silent calibration-corpus contamination); movable
+`tree-` pins; a tag that presents as content-addressed but omits real inputs.
 
-Seen correctly today: own service dir (including its `pylock.toml` and
-calibration artifacts) and shared allowlisted roots outside `workloads/`
-(placeframe: `database/`, `packages/python/`, `packages/generated/*`).
+### The design: attribution, not buckets
 
-Related observation: `reconstructor-cuda` and `reconstructor-rocm` share one
-Dockerfile dir, hence one tree tag, across two image repositories; the variant
-difference is a manifest arg (G2). After the fix this is still fine — different
-repos, and manifest edits re-key — but worth remembering when reasoning about
-tag uniqueness.
+The original fix sketch (coarse shared buckets) is superseded. The hash input
+set is computed per service by attributing the Dockerfile's actual
+consumption — the Dockerfile is the declaration; no input declarations in
+`docker-devkit.yaml` or the manifest (a config-declared input list is a second
+source of truth that drifts, and verifying it against the Dockerfile requires
+the parser anyway).
 
-### Why it matters — concrete harms
+Per-service hash inputs:
 
-- **Calibration corpus contamination (sharpest harm).** `LOCALIZER_SHA` is the
-  localizer's `pipeline_version` (`workloads/localizer/Dockerfile` stamps it as
-  ENV; the runtime loader hard-fails on mismatch; `fit-calibration` keys its
-  corpus on it specifically to prevent pooling across different pipelines). A
-  torch-base bump produces a numerically different localizer with the *same*
-  `pipeline_version`: the corpus silently pools across genuinely different
-  pipelines. Same for `RECONSTRUCTOR_SHA`, stamped into every
-  `ReconstructionMetrics` row.
-- **Movable pins.** Because a rebuild pushes the same tag over a new digest (ghcr
-  allows tag overwrite), a base bump silently repoints every existing `tree-`
-  pin. Today that bites infra (three hand pins: `infra/placeframe/
-  reconstructor-probe.yaml:13`, `EnableLocalNode.py:7`, `program/reconstructor.py:9`)
-  and placeframe's committed `stack/generated/**` artifacts, which embed `tree-`
-  refs.
-- **Identity promise broken in general.** The tag presents as content-addressed
-  but the address omits real inputs (bases, args, dependency builds).
+1. The service's Dockerfile itself. Any recipe change re-keys, which keeps the
+   closure self-consistent: a new `COPY` line moves the hash at the same
+   moment the newly copied files enter the resolved set.
+2. The resolved `COPY`/`ADD` source set — every context path or glob the
+   Dockerfile actually copies, resolved against the allowlisted tree. Shared
+   roots enter a service's hash only when copied (`packages/python/common/**`
+   for the api; nothing for the gateway).
+3. The ARG-consumed `workloads/images.lock` lines — intersect the Dockerfile's
+   `ARG` declarations with lock names; hash only those lines. Conservative in
+   the safe direction: declared-but-unused args still hash their lines.
+   Lock lines consumed only at runtime by compose (never declared as build
+   args) drop out of build hashes entirely.
+4. The service's own `build` mapping from the bake manifest, serialized from
+   the parsed document (YAML anchors already resolved) — not the whole file,
+   so another service's edit cannot re-key. Tag lists do not affect bits and
+   stop re-keying anything.
+5. Dependency inputs as embedded tree hashes — instead of re-listing a
+   dependency's files inside dependents' hashes, embed the dependency's own
+   computed tree hash as a synthetic entry (hash-of-hash; the
+   `additional_contexts` graph is a DAG, no circularity). The union-find walk
+   exists as `dependency_groups` (`matrix.py`); lift it to the shared
+   documents layer and consume it here.
 
-### The fix
+`.dockerignore` drops out of the hash entirely: an edit that changes what a
+`COPY` glob matches changes the resolved set and re-keys exactly the affected
+services; an edit that changes nothing matched changed no bits, so no re-key
+is correct. The resolved set absorbs it.
 
-Make the tag address the full input closure of the image. In
-`compute_service_shas`:
+### The fail-closed construct guard
 
-1. **Repo-level build inputs become shared entries**: `workloads/images.yml`,
-   `workloads/images.lock`, and the root `.dockerignore` join the shared set
-   (same standing as `database/` and `packages/**` already have). Coarse — any
-   lock bump re-keys every service — and correctly so: CI rebuilds everything on
-   any bump, and a per-service arg-graph would be machinery for precision nobody
-   consumes.
-2. **Dependency closure**: each tagged service's entry set gains the dirs of its
-   transitive `additional_contexts: target:` dependencies, tagged or tagless.
-   The union-find walk already exists as `dependency_groups`
-   (`src/docker_devkit/matrix.py:64`); lift it to a shared home (it is a
-   bake-document fact) and consume it here.
-3. **Fail-loudly companion for G5**: scan each Dockerfile's `COPY` lines and
-   reject any source outside {own dir} ∪ {shared roots} ∪ {declared dependency
-   dirs} — the same spirit as the allowlist's "adding a COPY not listed here
-   fails the build loudly", closed for cross-service paths. The Dockerfile
-   scanning pattern exists in `image_refs.stray_references`.
+Precision is safe only if the construct inventory is complete, so the parser
+fails closed: any Dockerfile or manifest construct that could read the build
+context and cannot be fully attributed is a loud build failure, never a silent
+gap. The context-reading constructs to enumerate: `COPY` from context,
+`ADD` with a local path (URL-form `ADD` is network, out of scope like apt),
+`RUN --mount=type=bind,source=…` (reject), path-form `additional_contexts`
+(reject; only `target:` form is attributed). Unknown syntax, heredoc `COPY`,
+and unresolvable globs fail loudly. The same scan rejects cross-service
+`COPY` sources outside {own dir} ∪ {copied shared roots} ∪ {declared
+dependency outputs} — the G5 guard, absorbed into the attribution pass.
 
-No tag-grammar change: `tree-` stays, the value is opaque and re-keys anyway.
-New tests in `tests/test_context_sha.py`: lock edit re-keys all; manifest arg
-edit re-keys all; dependency-dir edit re-keys dependents; `.dockerignore` edit
-re-keys; out-of-closure COPY raises.
+### Dirty-tree guard
 
-Stale comment to refresh while in there: `matrix.py`'s comment claims
-`neural-networks-base-*` are tagless; they carry tags in placeframe's manifest
-today.
+The hash is over the committed tree while builds compile the working tree.
+Post-fix this is the only remaining way the tag can lie, so build paths
+refuse a dirty tree: `build` and `up --build` run `git status --porcelain`
+filtered to the allowlisted set (modified and untracked allowlisted files
+both count) and fail loudly listing the offending paths. `up` without
+`--build` stays permitted — it pulls images by committed-tree tag and is
+self-consistent. `generate-score` and `publish-compose` run in CI on clean
+checkouts; the guard there is a no-op.
 
-### One-time re-key effects (benign, but must be choreographed)
+### Over-inclusion fates
 
-- Every image gets a fresh `tree-` tag at its next build; **old tags freeze in
-  place** (CI never re-pushes them) — the fix converts existing pins from
-  movable to actually-immutable, so they get safer, not broken.
+- Lock bump: re-keys only services declaring that base's arg. A torch bump no
+  longer patch-bumps the gateway.
+- Manifest edit: re-keys only the edited service. Global non-bit keys
+  (`x-cross-compile-targets`, `x-registry-cache`, tag lists) re-key nothing.
+- Shared roots: re-key exactly the copying services.
+- Allowlist extras (placeframe's `packages/generated/csharp/api-client/` is
+  copied by zero of 47 COPY lines): re-key nothing; cost is context upload
+  size only.
+- Docs inside service dirs: not over-inclusion — most Dockerfiles copy the
+  service dir wholesale, so the doc is in the bits; the fix is selective
+  COPYs, not hash machinery.
+
+### Soundness argument
+
+Context files reach image bits only through `COPY`/`ADD` (both resolved),
+declared args (hashed conservatively), `FROM` bases (lock lines, digest-pinned
+so upstream drift cannot change bits without a lock edit, which re-keys), and
+`additional_contexts` outputs (embedded dep hashes). The guard converts any
+unattributable construct into a loud failure. Environment channels are
+deliberately uncovered: buildx/docker engine version, runner quirks, network
+fetches during build (apt mirror drift). Consequence: a same-tree rebuild can
+yield a different digest, and ghcr tags are mutable, so a rebuild can
+overwrite a `tree-` tag onto fresh bytes — accepted residual; the mitigation
+that matters is Part 2's release-time semver alias, which points at the
+certified digest and never moves.
+
+Variant subtlety: `reconstructor-cuda` and `reconstructor-rocm` share one
+Dockerfile dir and therefore one tree tag — the variant difference is a
+manifest arg, covered by the manifest-mapping input, so both variants hash
+identically. Sound because tree tags are per-repository unique (the full ref
+disambiguates), a variant-arg edit re-keys both, and Part 2 gives variants one
+shared version line, so advancement stays variant-synced.
+
+### One-time re-key choreography
+
+- Every image gets a fresh `tree-` tag at its next build; old tags freeze in
+  place (CI never re-pushes them) — existing pins convert from movable to
+  actually-immutable.
 - placeframe's committed `stack/generated/**` embed old tags: one deliberate
   regeneration cycle after relocking docker-devkit (commit the devkit bump,
-  regenerate, commit artifacts — the score staleness gate is disabled there, so
+  regenerate, commit artifacts; the score staleness gate is disabled there, so
   this is operator discipline).
-- infra's pins keep resolving to frozen old digests; re-point at leisure.
+- infra's three `tree-` pins keep resolving to frozen old digests; re-point at
+  leisure (or adopt Part 2 version tags).
 - Calibration corpus rows keep their old `pipeline_version` values; the
   mismatch hard-fail on redeploy is existing behavior for any re-key.
-- Delivery: docker-devkit patch release (pre-1.0, breaking rides the patch
-  flow) + relock in placeframe, placeframe-capture-tool, Make-it-Sing.
+- Refresh the stale comment in `matrix.py` claiming `neural-networks-base-*`
+  are tagless.
 
-### Residual design decision: committed tree vs working tree
+### Delivery
 
-The hash is over the **committed** tree while local `build`/`up` build the
-**working** tree: uncommitted edits produce images stamped with the committed
-tree's identity, silently. Pre-fix this was academic; post-fix it is the
-remaining hole. Options: refuse to build when allowlisted paths differ from HEAD
-(one `git status --porcelain` check over the allowlisted set), or an explicit
-decision that the tag means committed-tree identity and builds must be clean.
-Open question 1.
+One docker-devkit patch release (pre-1.0, breaking rides the patch flow),
+then relock in placeframe, placeframe-capture-tool, Make-it-Sing. Precision
+must land as Part 1 directly — coarse-then-precise would mean two input-set
+changes, two re-key events, two regeneration cycles. Estimated 3–5 days
+including the test battery.
 
-## Part 2 — image version tags (github-actions-toolkit; after Part 1)
+### Tests
 
-### Motivation: the pointer landscape has a hole
+The over-inclusion list becomes the negative-test list: lock line for an
+undeclared base edited → unaffected services unchanged; other service's
+manifest arg edited → this service unchanged; shared-root file not copied by
+a service edited → that service unchanged; `.dockerignore` edit that matches
+nothing → no re-key; own-dir edit → re-key; dependency dir edit → dependent
+re-keys; declared-arg lock edit → re-key; cross-service COPY → loud failure;
+`RUN --mount=type=bind` → loud failure; path-form `additional_contexts` →
+loud failure; dirty tree on `build`/`up --build` → loud failure listing
+paths; dirty tree on bare `up` → permitted.
 
-- `tree-` (post-fix): content-addressed, immutable, but unordered and unreadable.
-- `:latest`: moved by **every PR build** (build-docker runs on PRs via
-  integrate), so it points at unmerged, uncertified heads — worse than useless.
-- No ordered, certified image pointer exists at all. `dev-{count}` on images
-  would be the only thing meaning "latest merged-to-dev image set"; a CalVer tag
-  the only thing meaning "the image set that shipped in this release".
+## Part 2 — github-actions-toolkit: per-service semver image and bundle lines
 
-Current cross-repo consumers, all hand-maintained: Make-it-Sing pins the compose
-bundle by raw digest (`oci://…placeframe/placeframe-cuda@sha256:…`,
-`Make-it-Sing/compose.yml:6`); infra pins `tree-` tags by hand in three files;
-placeframe's own generated stack embeds `tree-` refs from the committed tree.
+### Version space: per-service semver
 
-### Proposed design (not converged)
+Repo-level CalVer was rejected in favor of per-image semver lines: the
+consumable-image ecosystem is semver-dominant (this org's own `x-base-images`
+consumes grafana, caddy, keycloak — all semver); automated-consumption
+machinery (Renovate's docker manager, Flux `semver` image policies,
+dependabot) is semver-native; and the expected repo splits make org images
+cross-repo consumables that the lock resolves by tag exactly like third-party
+images. Semver's compatibility contract maps to image surfaces (env holes,
+ports, service names, volume layout): major = breaking contract, minor =
+additive, patch = fix, human-asserted via `major_minor` — the same trust model
+packages use.
 
-- **Release-time aliasing in the toolkit release verb**, not build-time. The
-  verb already pulls the digest manifest from the shelf at the certified SHA on
-  every channel (`verbs/release.py:212`); alias each entry's `ref@digest` onto
-  the release's tag. Build-time tagging would require threading version/count
-  facts into the docker matrix legs (they carry none today — `matrix` stamps
-  only project-owned legs); release-time needs zero build-path changes.
-- **Version space: CalVer, repo-level** (`{ref}:{YYYY.MM.N}`), riding the
-  release the images ship in — versus per-image semver (a new `images:` section
-  in `publish.yml`, per-image tag namespaces, plan computation: the full package
-  machinery duplicated). CalVer is honest and cheap; the only argument that
-  flips it is per-image semver coupling to package versions (open question 3).
-- **Tag-everything semantics.** Every release aliases the full image set at the
-  certified head, including images whose bits did not change since the previous
-  release. The CalVer tag is a *release-event alias* ("the stack that shipped in
-  2026.10.4"), not a content identity (that is `tree-`'s job). Complete release
-  sets beat partial ones: partial tagging forces every consumer to know "which
-  tag is the newest one that exists for this image". Same philosophy as the
-  per-run release bodies ("snapshots, not changelogs").
-- **Channels: stable and dev.** Dev cuts `dev-{count}` image tags with the same
-  mechanism when cutting the `dev-{count}` prerelease — symmetric with package
-  dev versions, fills the ordered-certified-pointer gap. PR channel deferred
-  (open question 7): weakest value (PR notes already link the exact `tree-`
-  tags), guaranteed garbage (closed PRs; every push increments the count), and
-  it would push cleanup duties into merge-gate and the closed-PR sweep, which
-  today touch only git releases. Purely additive later.
+Tag-everything semantics: every release aliases the full image set — changed
+images at their new version, unchanged at their existing one (a metadata
+no-op) — so complete sets exist at every release and "newest tag for image X"
+is always its highest semver. The release event keeps its CalVer git tag as
+the grouping label; apps stay on their existing per-app semver (a CalVer
+conversion for apps was considered and retired).
 
-### ghcr semantics the design must respect
+### Declaration surface: `images:` in publish.yml
 
-ghcr's model is version-level (a version = a digest), tags are attributes:
+One entry per version line, keyed by the unit name: the bake service name
+with the `-cuda`/`-rocm` variant suffix removed. `major_minor` per unit,
+required, same meaning as packages. All variant repositories of a unit receive
+the same version tag (`reconstructor-cuda:0.1.3` and `reconstructor-rocm:0.1.3`
+share the `reconstructor` line and the `reconstructor-v0.1.3` git tag).
+placeframe has 15 services / 13 units.
 
-- **Tags on one digest coexist; deletion kills all of them.** A stable release's
-  certified head is a digest that already carries `dev-{count}` (it landed on
-  dev first). CalVer aliasing lands on the same version — dev image tags can
-  never be swept the way `release --channel stable` sweeps `dev-*` git releases.
-- **Therefore no tag GC, and retention policies are a hazard.** A "keep last N
-  versions" package setting would eventually delete digests a CalVer tag points
-  at, silently rotting released versions. Safe posture: no retention policies on
-  image repos that carry release tags; accept accumulation; any future sweeper
-  must be version-level and CalVer-protecting.
+### Change detection via the shelf — no docker-devkit dependency
 
-### Mechanism
+The release verb does not import docker-devkit. Per unit: resolve the highest
+`{unit}-v*` git tag → its commit → pull that SHA's digest manifest from the
+shelf → compare tree tags (recorded in each entry's `tags[]` by the build
+push) against the certified head's. Differing tree tag in any variant ⇒ ship
+and bump patch (or the declared `major_minor` sits above the line, forcing the
+bump — the packages' forced-publish rule). No tag yet ⇒ first release ships.
+All primitives exist: `pull_digest_manifest` takes an arbitrary SHA and is a
+build-artifact-registry dependency the toolkit already has. The dev channel
+compares against the highest stable tag's commit, exactly like package
+path-diff.
 
-New aliasing primitive in build-artifact-registry (org law: the toolkit owns no
-registry CLI code), reusing the neutral credential chain. `oras tag` is proven
-on cache artifacts (`cache.py:101` `promote_scope`) but not on docker image
-manifest lists — verify live first (open question 6); `docker buildx imagetools
-create` is the fallback but drags buildx into the release job. Stable delivery
-jobs already carry `packages: write`. Push-once discipline holds: CalVer
-count-and-cut and dev counts are serialized under the release mutex; the shelf
-is SHA-keyed so re-runs alias identical digests (metadata no-op).
+Nothing-to-ship gates: stable ships when any package, app, image unit, or
+bundle changed — an images-only repo cuts releases per promotion that changes
+image inputs (promotion cadence is operator-controlled; this matches the
+package discipline). Dev tightens from manifest-presence to the same
+change-based gate; a docs-only landing in an images-only repo cuts nothing.
+Digest-based detection was rejected: rebuild churn re-digests unchanged trees
+and would bump versions on noise; tree tags are source-precise post-Part-1.
 
-### Change detection (optional; only feeds the nothing-to-ship gate)
+### Channels and spellings
 
-Stable's nothing-to-ship early return (`release.py:104`) ignores images today:
-a repo with images but no changed packages/apps cuts no release — so an
-images-only repo can never cut one, and whether images should count as shippable
-is open question 4.
+- Stable: alias each unit's variant digests onto `{version}` and `latest`;
+      push the `{unit}-v{version}` git tag.
+- Dev: alias changed units onto `{base}-dev.{count}` (npm spelling; valid tag
+      grammar). Unchanged units need nothing — their stable tag already
+      resolves. Dev bodies show the dev spelling when changed, the current
+      stable tag otherwise, mirroring the packages table. No git tags on dev.
+- PR: no image version tags, permanently. PR digests become dev and stable
+      digests after landing; ghcr deletes tags per digest-version, so any
+      `pr-*` image tag sweep would endanger stable tags on shared digests —
+      "additive later" would be hazardous later. PR bodies keep `tree-` tag
+      links.
 
-- Cheap detector (toolkit-only, one helper): previous CalVer git tag → its
-  merge commit's parent2 (the previous certified head) → pull that SHA's digest
-  manifest from the shelf → diff against the current one. All primitives exist
-  (`pull_digest_manifest` takes an arbitrary SHA). Key choice: **digest**
-  (catches everything including base bumps, over-reports on rebuild churn —
-  timestamps likely re-digest unchanged trees; safe direction) versus **tree
-  tag** (precise on source content, but inherits Part 1's blind spots until the
-  fix lands; after Part 1 it becomes the sane key). If this is ever wanted for
-  partial tagging or per-image version lines rather than just the gate, it
-  requires the post-fix tree key — another reason Part 1 lands first.
+### `:latest` repoint
 
-### Consumer adoption
+Today `latest` is pushed by every PR build and points at uncertified heads —
+the one cell violating the PR-column principle. Consumers remove `latest`
+from `workloads/images.yml` build tags; the stable aliasing includes it
+alongside the version. `latest` becomes honestly "newest released version of
+this image." Dev never aliases it.
 
-- **`x-base-images` + `workloads/images.lock`**: works with zero docker-devkit
-  code today — `update_lock_entries` resolves any tagged ref via
-  `imagetools inspect`, so `placeframe/api:2026.10.1` locks to a digest exactly
-  like a third-party tag; `unpinned_references` passes a version tag. This is
-  the "lock resolves the readable tag, digest gives immutability" story.
-- **Mirror routing for org-internal refs** (open question 5): as-is, a declared
-  org-built ref rides the mirror (`mirrored_ref` prefixes it; the `mirror` verb
-  crane-copies it; `up`'s `enforce_mirrored` probes it). Uniform, zero code —
-  but the mirror's stated rationale (upstream GC/yank) does not apply to
-  org-owned ghcr. Alternative: an org-namespace pass-through exemption, touching
-  `mirrored_ref`, the lock writer, the `mirror` verb, and `enforce_mirrored` —
-  contained. Session recommendation was the exemption.
-- **infra**: switch the three `tree-` pins to version tags. Post-Part-1 tree
-  pins freeze, but version tags never move at all; strictly better.
-- **Make-it-Sing's compose bundle is NOT covered by any of this.** The bundle
-  (`placeframe-cuda`) is published by placeframe-local `publish-compose` on
-  integrate pushes with `{sha}` + branch tags only (`scripts/src/scripts/
-  publish_compose.py:104-110`); `include: oci://…` is not an `x-base-images`
-  declaration, is not scanned by `stray_references`, has no lock step, and never
-  sees a CalVer. Versioning the bundle is a separate, placeframe-scoped follow-up
-  (open question 8).
-- **Version coupling**: `version_coupling_violations` composes with image
-  versions only if they share a version space with packages — with CalVer they
-  do not. If any consumer wants "image tag must match `placeframe-core` version"
-  coupling, that is the argument that flips open question 3 to per-image semver.
+### Aliasing mechanism (verified)
+
+New primitive in build-artifact-registry (org law: the toolkit owns no
+registry CLI code), beside `promote_scope`: resolve `ref@digest` from the
+shelf manifest, `oras tag` the new tags. Verified live 2026-10-22 against
+`registry:2` with the pinned oras 1.2.2: OCI image index aliases preserve
+digest and media type; single manifests work; multiple tags per call work;
+missing references fail loudly. ghcr itself was not push-tested from the
+sandbox (no `packages:write` token) — risk negligible; `docker buildx
+imagetools create -t` is the documented one-line fallback. Stable delivery
+jobs already carry `packages: write`; push-once discipline holds under the
+release mutex; the shelf is SHA-keyed so re-runs alias identical digests.
+
+### ghcr semantics to respect
+
+ghcr's model is version-level (a version = a digest); tags are attributes.
+Tags on one digest coexist; deleting a version kills all its tags. A stable
+release's certified digest already carries its dev spelling — dev image tags
+can never be swept the way stable sweeps `dev-*` git releases. Therefore no
+tag GC, and retention policies are a hazard: no retention policies on image
+repos carrying release tags; accept accumulation; any future sweeper must be
+version-level and release-protecting.
+
+### Compose bundles: `bundles:` in publish.yml
+
+The bundle is the stack-as-a-unit and the artifact consumers actually include
+(`Make-it-Sing/compose.yml:6`). It gets its own semver line — the Helm chart
+analog (a chart is a bundle of pinned images with contracts; Helm mandates
+strict semver) — versioned by the toolkit, not placeframe-locally.
+
+- Declaration: `bundles:` section — name, ref(s), `major_minor`, and
+  `sources` (the compose source paths; unlike the rejected Dockerfile input
+  declarations, compose sources are stated nowhere else, so declaring them is
+  new information, not duplicated state). Variants (`placeframe-cuda`,
+  `placeframe-rocm`) share one line.
+- Change detection: any image unit advanced OR path-diff over `sources`
+  (which includes `workloads/images.lock` — a runtime third-party bump like a
+  loki upgrade changes bundle bits without any local tree moving).
+- Mechanism: release-time aliasing with the same verified primitive. Every
+  certified head's bundle is already published under an immutable `{sha}` tag
+  by its PR run (`publish_compose.py` publishes on PR heads and landings), so
+  dev and stable alias `placeframe-{variant}:{sha}` onto `{base}-dev.{count}`
+  / `{version}` with no new publish job and no ordering problem. Stable pushes
+  the `{bundle}-v{version}` git tag.
+- Branch tags retired: PR runs currently stamp the PR branch name and
+  landings stamp `dev`/`main` — movable pointers accumulating per PR,
+  the same disease as PR-moved `latest`. `publish-compose` publishes `{sha}`
+  only; release-verb aliases carry all channel meaning.
+- Make-it-Sing: no change required — the digest include remains the correct
+  discipline. What improves is finding the digest: the release body gains a
+  Bundle row (version linked to the ghcr version page).
+
+### Release-note surfaces
+
+The images table becomes `Image | Version` — the changed/unchanged pattern of
+the packages table, strictly more informative than a uniform stamp. The
+`tree-` tag remains as content identity one click away on the version page.
+The three per-run surfaces (pr/dev/stable) render from the same spine.
+
+### Tests
+
+Unit-tag derivation (variant suffix stripping); version math reuse (highest
+`{unit}-v*` + 1, forced publish on declared-line-above-tags); shelf-based
+tree-tag comparison (changed, unchanged, first-release, missing-shard);
+nothing-to-ship including images and bundles; aliasing calls against a stub
+registry; bundle gate (image-advanced, source-diff, lock-diff); `latest`
+aliased on stable only.
+
+## Consumer adoption
+
+- placeframe: add `images:` (13 units) and `bundles:` (`placeframe`, variants
+  cuda/rocm, compose sources) to `publish.yml`; drop `latest` from
+  `workloads/images.yml` tags; `publish-compose` drops branch tags; one-time
+  `stack/generated/**` regeneration after the docker-devkit relock.
+- Make-it-Sing: same `images:` for `livekit-token`; `latest` removal; one-time
+  stale-tag cleanup (below).
+- placeframe-capture-tool: `images:` for its workloads; `latest` removal.
+- infra: switch the three `tree-` pins (`reconstructor-probe.yaml:13`,
+  `EnableLocalNode.py:7`, `program/reconstructor.py:9`) to version tags at
+  leisure — post-Part-1 tree pins freeze and remain valid.
 
 ## Sequencing
 
-1. Part 1 in docker-devkit → patch release → consumer relocks → placeframe's
-   one-time `stack/generated/**` regeneration cycle.
-2. Part 2 in github-actions-toolkit (+ build-artifact-registry aliasing
-   primitive).
-3. Adoption per consumer: infra pins, `x-base-images` declarations, mirror
-   routing policy.
+1. Part 1 in docker-devkit (precision closure + fail-closed guard + dirty-tree
+   guard) → patch release → relock the three consumers → placeframe's
+   regeneration cycle.
+2. Part 2 in github-actions-toolkit (+ the build-artifact-registry aliasing
+   primitive). Requires Part 1 (tree tags are the change key).
+3. Adoption per consumer.
 
-## Open questions (close before implementation)
+## Closed decisions
 
-1. Committed-tree vs working-tree identity: dirty-tree guard, or documented
-   committed-tree identity with clean-build requirement?
-2. COPY-scan guard (G5) in the same change, or a follow-up?
-3. Version space for image tags: CalVer repo-level vs per-image semver (flips
-   only if package-version coupling is wanted).
-4. Nothing-to-ship: do images count as shippable (images-only repos cut a
-   release on every main push), and is that cadence accepted? If not, which
-   gate — presence, digest-change, or post-Part-1 tree-change?
-5. Mirror routing for org-internal refs: ride the mirror (zero code) or
-   org-namespace pass-through exemption (recommended in session)?
-6. Verify `oras tag` works against ghcr image manifest lists; fallback is
-   `docker buildx imagetools create` in the release job.
-7. PR-channel image tags: deferred (session position) or ruled out?
-8. Compose-bundle versioning (Make-it-Sing's include): scope a placeframe-local
-   follow-up or drop.
+1. Dirty-tree identity: guard on build paths (`build`, `up --build`); bare
+   `up` permitted; committed-tree identity otherwise.
+2. COPY-scan guard (G5): batched into the Part 1 release, enforced at hash
+   time inside the attribution pass.
+3. Version space: per-service semver lines with tag-everything (flipped from
+   CalVer after research; rationale above). Flip-away conditions recorded:
+   none known — contract-coupling consumers would strengthen, not weaken, it.
+4. Images count as shippable; gate is tree-tag change (post-Part-1), not
+   digest change (rebuild churn) or presence (release spam); dev gate
+   tightened to match.
+5. Mirror routing for org-internal refs: closed by standing default — they
+   ride the mirror like every declaration; no exemption planned. Re-opens
+   only when a first org-internal `x-base-images` declaration makes the
+   redundancy real. Deferral is safe: nothing depends on it, the default is
+   benign (byte-identical copies), and adopting an exemption later carries no
+   migration cost.
+6. `oras tag` on manifest lists: verified working (registry:2 live test,
+   pinned oras 1.2.2); primitive lives in build-artifact-registry.
+7. PR-channel image tags: ruled out permanently (ghcr version-deletion
+   hazard; zero value); `latest` repointed to stable aliasing.
+8. Compose bundles: own semver line, toolkit-generic via `bundles:`,
+   release-time aliasing, variants share the line, branch tags retired.
+
+Course adjustment (2026-10-22, supersedes the original coarse-bucket Part 1):
+precision attribution replaces bucket partitioning, because per-service semver
+made precision load-bearing (every over-inclusion is a spurious version bump)
+and the G5 parser — already required — makes it cheap. Config-declared input
+lists were considered and rejected: the Dockerfile is the declaration.
+
+## Dismissed and deferred
+
+- Image-attached contract metadata / lock-as-DAG-resolver: ruled out as
+  beyond state of practice and redundant with the compose layer, which already
+  expresses the dependency graph. Semver tags are the substrate; the lock
+  resolves tags to digests for org images exactly as for third parties.
+- App CalVer conversion: retired (consistent with images staying semver).
+- docker-devkit lock support for `include: oci://` refs (declare bundle by
+  version tag, lock resolves digest): future, not now — same org-internal
+  consumption future as decision 5.
+- Per-image CalVer aliases: available later as free additional tags if ever
+  wanted; not the primary space.
+
+## Hygiene
+
+- Make-it-Sing carries stale git tags from the release machinery's own
+  debugging era: `pr-4-237`, `pr-4-238` (superseded same-PR builds, pre-dating
+  the ordered sweep), `pr-6-250` (pre-dating working landed-PR resolution;
+  `dev-250` is its landing). Delete the stale releases and tags once;
+  check whether `pr-5-248` / `pr-7-254` belong to still-open PRs first.
+- placeframe's `.dockerignore` allows `packages/generated/csharp/api-client/`
+  though nothing copies it: harmless under precision, but it bloats every
+  build context; remove at leisure.

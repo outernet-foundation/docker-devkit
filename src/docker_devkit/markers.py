@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, TypeIs
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # Authoring markers are single-key mappings so authored sources stay plain-YAML-parseable.
 # Include markers insert a repo-root-relative file's bytes or parsed structure; lock markers
@@ -38,10 +38,10 @@ def contains_marker(node: Any) -> bool:
     if _marker_entry(node, MARKERS) is not None:
         return True
 
-    if _is_mapping(node):
+    if is_mapping(node):
         return any(contains_marker(value) for value in node.values())
 
-    if _is_list(node):
+    if is_list(node):
         return any(contains_marker(item) for item in node)
 
     return False
@@ -64,18 +64,15 @@ def resolve_includes(node: Any, root: Path, source: str, ancestors: tuple[Path, 
         text = path.read_text(encoding="utf-8")
         if key == TEXT_MARKER:
             return text
-        try:
-            parsed = yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            raise RuntimeError(f"{source}: include {value!r} is not valid YAML: {error}") from error
+        parsed = yaml.safe_load(text)
         if parsed is None:
             raise RuntimeError(f"{source}: include {value!r} is empty")
         return resolve_includes(parsed, root, source, (*ancestors, path))
 
-    if _is_mapping(node):
+    if is_mapping(node):
         return {key: resolve_includes(value, root, source, ancestors) for key, value in node.items()}
 
-    if _is_list(node):
+    if is_list(node):
         return [resolve_includes(item, root, source, ancestors) for item in node]
 
     return node
@@ -96,11 +93,8 @@ def resolve_lock_refs(node: Any, images: dict[str, str], source: str) -> Any:
         if image_spec.key not in images:
             raise RuntimeError(f"{source}: lock entry {image_spec.key!r} does not exist in the image lock")
         reference = images[image_spec.key]
-        path_part, separator, digest = reference.rpartition("@")
-        if not separator or not digest.startswith("sha256:"):
-            raise RuntimeError(
-                f"{source}: lock reference {reference!r} is not digest-pinned and cannot split into chart image fields"
-            )
+        # Every lock entry is digest-pinned at load (ImageLock), so the split always yields a digest.
+        path_part, _, digest = reference.rpartition("@")
 
         fields: dict[str, str] = {}
         tagged = path_part.rpartition(":")
@@ -117,10 +111,10 @@ def resolve_lock_refs(node: Any, images: dict[str, str], source: str) -> Any:
             fields["digest"] = digest
         return fields
 
-    if _is_mapping(node):
+    if is_mapping(node):
         return {key: resolve_lock_refs(value, images, source) for key, value in node.items()}
 
-    if _is_list(node):
+    if is_list(node):
         return [resolve_lock_refs(item, images, source) for item in node]
 
     return node
@@ -130,11 +124,8 @@ def _image_spec(value: Any, source: str) -> LockImageSpec:
     if isinstance(value, str):
         return LockImageSpec(key=value)
 
-    if _is_mapping(value):
-        try:
-            return LockImageSpec.model_validate(value)
-        except ValidationError as error:
-            raise RuntimeError(f"{source}: lock-image marker rejected: {error}") from error
+    if is_mapping(value):
+        return LockImageSpec.model_validate(value)
 
     raise RuntimeError(
         f"{source}: lock-image takes a lock-entry name or a key/digest_field mapping, not {type(value).__name__}"
@@ -148,16 +139,16 @@ def _split_path(path: str, reference: str, source: str) -> tuple[str, str]:
     return registry, repository
 
 
-def _is_mapping(node: Any) -> TypeIs[dict[Any, Any]]:
+def is_mapping(node: Any) -> TypeIs[dict[Any, Any]]:
     return isinstance(node, dict)
 
 
-def _is_list(node: Any) -> TypeIs[list[Any]]:
+def is_list(node: Any) -> TypeIs[list[Any]]:
     return isinstance(node, list)
 
 
 def _marker_entry(node: Any, markers: tuple[str, ...]) -> tuple[str, Any] | None:
-    if _is_mapping(node) and len(node) == 1:
+    if is_mapping(node) and len(node) == 1:
         key, value = next(iter(node.items()))
         if key in markers:
             return (key, value)

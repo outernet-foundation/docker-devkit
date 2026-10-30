@@ -7,11 +7,12 @@ import tomllib
 from dataclasses import dataclass
 from itertools import starmap
 from pathlib import Path
+from typing import Any
 
+import yaml
 from bashrun.bash import bash_output
-from pydantic import RootModel
 
-from .documents import BakeDocument, parse_bake
+from .config import DockerDevkitConfig
 
 BUILD_ARG_PATTERN = re.compile(r"\$\{[A-Za-z0-9_]+\}")
 FROM_PATTERN = re.compile(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", re.MULTILINE)
@@ -20,12 +21,7 @@ IMAGE_LINE_PATTERN = re.compile(r"^\s*image:\s*[\"']?([^\s\"']+)", re.MULTILINE)
 DIGEST_PATTERN = re.compile(r"^Digest:\s+(sha256:[a-f0-9]+)", re.MULTILINE)
 MISSING_VERSION = "<missing>"
 
-
 type TomlValue = str | int | float | bool | dt.datetime | dt.date | dt.time | list[TomlValue] | dict[str, TomlValue]
-
-
-class TomlDocument(RootModel[TomlValue]):
-    pass
 
 
 @dataclass(frozen=True)
@@ -56,27 +52,27 @@ def unpinned_references(root: Path) -> list[str]:
     image_paths = [path for image_glob in image_globs for path in sorted(root.glob(image_glob))]
     strays = (
         [
-            ImageReference("", match.group(1))
+            match.group(1)
             for path in dockerfile_paths
             for match in FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
         + [
-            ImageReference("", match.group(1))
+            match.group(1)
             for path in dockerfile_paths
             for match in COPY_FROM_PATTERN.finditer(path.read_text(encoding="utf-8"))
             if "/" in match.group(1)
         ]
         + [
-            ImageReference("", match.group(1))
+            match.group(1)
             for path in image_paths
             for match in IMAGE_LINE_PATTERN.finditer(path.read_text(encoding="utf-8"))
         ]
     )
     return [
-        occurrence.reference
-        for occurrence in strays
-        if not BUILD_ARG_PATTERN.search(occurrence.reference)
-        if "/" in (stripped := BUILD_ARG_PATTERN.sub("", occurrence.reference).strip())
+        reference
+        for reference in strays
+        if not BUILD_ARG_PATTERN.search(reference)
+        if "/" in (stripped := BUILD_ARG_PATTERN.sub("", reference).strip())
         if ":" not in (tail := stripped[stripped.rfind("/") + 1 :])
         if "@" not in tail
     ]
@@ -85,7 +81,7 @@ def unpinned_references(root: Path) -> list[str]:
 def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) -> list[str]:
     violations: list[str] = []
     for coupling in couplings:
-        value = TomlDocument.model_validate(tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))).root
+        value: TomlValue = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
         for component in coupling.pyproject_key.split("."):
             if not isinstance(value, dict) or component not in value:
                 raise RuntimeError(f"pyproject key {coupling.pyproject_key} is missing or non-table at {component}")
@@ -99,14 +95,11 @@ def version_coupling_violations(root: Path, couplings: list[VersionCoupling]) ->
                     found = MISSING_VERSION
                 else:
                     if site.base_image:
-                        haystack = next(
-                            (
-                                reference.reference
-                                for reference in bake_base_image_refs(parse_bake(path))
-                                if reference.name == site.base_image
-                            ),
-                            "",
-                        )
+                        # A presence probe over the config file's base_images mapping, not
+                        # schema consumption — the coupling lint reads one declared value.
+                        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+                        base_images: dict[str, Any] = document.get("base_images") or {}
+                        haystack = str(base_images.get(site.base_image, ""))
                     else:
                         haystack = path.read_text(encoding="utf-8")
                     match = re.search(site.pattern, haystack)
@@ -127,5 +120,5 @@ def resolve_remote_digest(reference: str) -> str:
     return match.group(1)
 
 
-def bake_base_image_refs(document: BakeDocument) -> list[ImageReference]:
-    return list(starmap(ImageReference, document.base_images.items()))
+def bake_base_image_refs(config: DockerDevkitConfig) -> list[ImageReference]:
+    return list(starmap(ImageReference, config.base_images.items()))

@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from docker_devkit.markers import contains_marker, resolve_includes, resolve_lock_refs
 
@@ -99,7 +100,7 @@ def test_non_string_marker_value_is_a_loud_error(tmp_path: Path) -> None:
 def test_invalid_yaml_include_is_a_loud_error(tmp_path: Path) -> None:
     write_repo({"broken.yaml": "key: [unclosed\n"}, tmp_path)
 
-    with pytest.raises(RuntimeError, match="not valid YAML"):
+    with pytest.raises(yaml.YAMLError):
         resolve_includes({"include-yaml": "broken.yaml"}, tmp_path, "x.yaml")
 
 
@@ -198,7 +199,7 @@ def test_lock_image_marker_supports_the_grafana_sha_spelling() -> None:
 
 
 def test_lock_image_marker_rejects_unknown_digest_fields() -> None:
-    with pytest.raises(RuntimeError, match=r"(?s)lock-image marker rejected.*digest_field"):
+    with pytest.raises(ValidationError, match=r"(?s).*digest_field"):
         resolve_lock_refs(
             {"image": {"lock-image": {"key": "LOKI_IMAGE", "digest_field": "checksum"}}},
             {"LOKI_IMAGE": LOKI},
@@ -207,7 +208,7 @@ def test_lock_image_marker_rejects_unknown_digest_fields() -> None:
 
 
 def test_lock_image_marker_rejects_extra_spec_keys() -> None:
-    with pytest.raises(RuntimeError, match="lock-image marker rejected"):
+    with pytest.raises(ValidationError):
         resolve_lock_refs(
             {"image": {"lock-image": {"key": "LOKI_IMAGE", "pull": "always"}}}, {"LOKI_IMAGE": LOKI}, "grafana.yaml"
         )
@@ -228,15 +229,6 @@ def test_lock_image_marker_splits_untagged_references_without_a_tag_field() -> N
         "repository": "loki",
         "digest": DIGEST,
     }
-
-
-def test_lock_image_marker_rejects_references_without_a_digest() -> None:
-    with pytest.raises(RuntimeError, match="not digest-pinned"):
-        resolve_lock_refs(
-            {"image": {"lock-image": "LOKI_IMAGE"}},
-            {"LOKI_IMAGE": "ghcr.io/outernet-foundation/mirror/docker.io/grafana/loki:3.5.0"},
-            "loki.yaml",
-        )
 
 
 def test_lock_marker_leaves_plain_strings_untouched() -> None:
