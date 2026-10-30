@@ -5,80 +5,49 @@ from pathlib import Path
 
 import typer
 
-from .documents import parse_bake
-from .lifecycle import GPU_TYPES, require_manifest
+from .config import load_config
 
 app = typer.Typer(add_completion=False, pretty_exceptions_show_locals=False)
 
-TARGET_CONTEXT_PREFIX = "target:"
 PLAIN_VARIANT = "common"
 
 
 @app.command()
 def matrix_main() -> None:
-    bake = parse_bake(require_manifest(Path.cwd()))
+    config = load_config(Path.cwd())
+    services = config.service_builds if config is not None else {}
 
-    # Build the cohort from every service declaring `platforms:` plus the hand-listed
-    # x-cross-compile-targets members.
-    unknown = set(bake.cross_compile_targets) - set(bake.services)
-    if unknown:
-        raise RuntimeError(f"x-cross-compile-targets names unknown services: {', '.join(sorted(unknown))}")
-    pinned = {service for service, config in bake.services.items() if config.build.platforms}
-    cohort = pinned | set(bake.cross_compile_targets)
+    # Group services into dependency closures over the derived context edges; load-time
+    # coherence guarantees one variant set per closure, so every member's targets land in
+    # the same variant cell and one leg builds a whole closure group in a single bake
+    # invocation.
+    parent = {service: service for service in services}
 
-    # Group services into dependency closures over additional_contexts target: references.
-    parent = {service: service for service in bake.services}
-
-    for name, service in bake.services.items():
-        for context in service.build.additional_contexts.values():
-            if not context.startswith(TARGET_CONTEXT_PREFIX):
-                continue
-            dependency = context.removeprefix(TARGET_CONTEXT_PREFIX)
-            if dependency not in bake.services:
-                raise RuntimeError(f"{name} references unknown build target {dependency!r} via additional_contexts")
-            left, right = find(parent, name), find(parent, dependency)
+    for name, service in services.items():
+        for dependency in service.contexts:
+            left, right = _find(parent, name), _find(parent, dependency)
             if left != right:
                 parent[right] = left
 
     members: dict[str, list[str]] = {}
-    for service in bake.services:
-        members.setdefault(find(parent, service), []).append(service)
+    for service in services:
+        members.setdefault(_find(parent, service), []).append(service)
 
-    # Emit one entry per variant × cohort cell, coalescing each cell's dependency-closure groups
-    # into a single leg; give the cross-compile cohort its own legs so QEMU-slow per-arch builds
-    # parallelize away from native ones.
-    entries_by_cell: dict[tuple[str, bool], list[str]] = {}
+    entries_by_variant: dict[str, list[str]] = {}
     for group in sorted(sorted(member_list) for member_list in members.values()):
-        explicit = sorted(service for service in group if bake.services[service].build.tags)
-        if not explicit:
-            continue
-        # Decide the variant from tagged services alone; tagless services ride as dependencies.
-        variants = {
-            next((gpu for gpu in GPU_TYPES if service.endswith(f"-{gpu}")), PLAIN_VARIANT) for service in explicit
-        }
-        if len(variants) > 1:
-            raise RuntimeError(
-                f"dependency group spans gpu variants ({', '.join(sorted(explicit))}) — "
-                "additional_contexts must stay within one device family"
-            )
-        variant = variants.pop()
-        memberships = {service in cohort for service in explicit}
-        if len(memberships) > 1:
-            raise RuntimeError(
-                f"dependency group spans cross-compile cohort membership ({', '.join(explicit)}) — "
-                "additional_contexts must stay within one cohort"
-            )
-        entries_by_cell.setdefault((variant, memberships.pop()), []).extend(explicit)
+        for name in group:
+            for target, variant in services[name].target_variants:
+                entries_by_variant.setdefault(variant or PLAIN_VARIANT, []).append(target)
 
     print(
         json.dumps([
             {"targets": " ".join(sorted(targets)), "variant": variant}
-            for (variant, _), targets in sorted(entries_by_cell.items())
+            for variant, targets in sorted(entries_by_variant.items())
         ])
     )
 
 
-def find(parent: dict[str, str], service: str) -> str:
+def _find(parent: dict[str, str], service: str) -> str:
     root = service
     while parent[root] != root:
         root = parent[root]

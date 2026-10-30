@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from docker_devkit import image_refs
-from docker_devkit.documents import BakeDocument
+from docker_devkit.config import DockerDevkitConfig
 from docker_devkit.image_refs import (
     ImageReference,
     VersionCoupling,
@@ -20,14 +20,14 @@ VERSION_COUPLINGS = [
     VersionCoupling(
         name="uv",
         pyproject_key="tool.uv.required-version",
-        sites=(VersionSite("uv base tag", "workloads/images.yml", r"uv:([^@]+?)-", "UV_BASE_IMAGE"),),
+        sites=(VersionSite("uv base tag", "docker-devkit.yaml", r"uv:([^@]+?)-", "UV_BASE_IMAGE"),),
     ),
     VersionCoupling(
         name="python",
         pyproject_key="project.requires-python",
         sites=(
-            VersionSite("uv base python component", "workloads/images.yml", r"python([0-9][0-9.]*)", "UV_BASE_IMAGE"),
-            VersionSite("python base tag", "workloads/images.yml", r"python:([0-9][0-9.]*)", "PYTHON_BASE_IMAGE"),
+            VersionSite("uv base python component", "docker-devkit.yaml", r"python([0-9][0-9.]*)", "UV_BASE_IMAGE"),
+            VersionSite("python base tag", "docker-devkit.yaml", r"python:([0-9][0-9.]*)", "PYTHON_BASE_IMAGE"),
             VersionSite("uv python install", "docker/zed-capture/Dockerfile", r"uv python install ([0-9][0-9.]*)"),
         ),
     ),
@@ -46,12 +46,12 @@ def _inspect_output_without_digest(command: str) -> str:
 
 class TestBakeBaseImageRefs:
     def test_should_yield_base_images(self):
-        bake = BakeDocument.model_validate({"x-base-images": {"ALPINE_IMAGE": "alpine:3.20"}, "services": {}})
-        assert bake_base_image_refs(bake) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
+        config = DockerDevkitConfig.model_construct(requires=">=0", base_images={"ALPINE_IMAGE": "alpine:3.20"})
+        assert bake_base_image_refs(config) == [ImageReference("ALPINE_IMAGE", "alpine:3.20")]
 
     def test_should_return_empty_when_no_base_images(self):
-        bake = BakeDocument.model_validate({"services": {}})
-        assert bake_base_image_refs(bake) == []
+        config = DockerDevkitConfig.model_construct(requires=">=0", base_images={})
+        assert bake_base_image_refs(config) == []
 
 
 class TestUnpinnedReferences:
@@ -153,9 +153,9 @@ class TestVersionCouplingViolations:
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nrequires-python = ">=3.13"\n\n[tool.uv]\nrequired-version = "==0.12.15"\n', encoding="utf-8"
         )
-        (tmp_path / "workloads").mkdir()
-        (tmp_path / "workloads" / "images.yml").write_text(
-            "x-base-images:\n"
+        (tmp_path / "docker-devkit.yaml").write_text(
+            'requires: ">=0"\n'
+            "base_images:\n"
             f"  UV_BASE_IMAGE: ghcr.io/astral-sh/uv:{uv_tag}\n"
             f"  PYTHON_BASE_IMAGE: docker.io/library/python:{python_tag}\n",
             encoding="utf-8",
@@ -171,36 +171,36 @@ class TestVersionCouplingViolations:
     def test_should_flag_drifted_uv_base_tag(self, tmp_path: Path):
         self._write_version_tree(tmp_path, uv_tag="0.12.14-python3.13-trixie-slim")
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [
-            f"uv: uv base tag at {tmp_path / 'workloads' / 'images.yml'}: expected 0.12.15, found 0.12.14",
+            f"uv: uv base tag at {tmp_path / 'docker-devkit.yaml'}: expected 0.12.15, found 0.12.14",
         ]
 
     def test_should_flag_unversioned_uv_base_tag(self, tmp_path: Path):
         self._write_version_tree(tmp_path, uv_tag="python3.13-trixie-slim")
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [
-            f"uv: uv base tag at {tmp_path / 'workloads' / 'images.yml'}: expected 0.12.15, found python3.13",
+            f"uv: uv base tag at {tmp_path / 'docker-devkit.yaml'}: expected 0.12.15, found python3.13",
         ]
 
     def test_should_flag_uv_base_without_python_component(self, tmp_path: Path):
         self._write_version_tree(tmp_path, uv_tag="0.12.15-trixie-slim")
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [
-            f"python: uv base python component at {tmp_path / 'workloads' / 'images.yml'}: expected 3.13, found <missing>",
+            f"python: uv base python component at {tmp_path / 'docker-devkit.yaml'}: expected 3.13, found <missing>",
         ]
 
     def test_should_flag_python_component_drift(self, tmp_path: Path):
         self._write_version_tree(tmp_path, python_tag="3.14-slim@sha256:" + "c" * 64, uv_python_install="3.14")
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [
-            f"python: python base tag at {tmp_path / 'workloads' / 'images.yml'}: expected 3.13, found 3.14",
+            f"python: python base tag at {tmp_path / 'docker-devkit.yaml'}: expected 3.13, found 3.14",
             f"python: uv python install at {tmp_path / 'docker' / 'zed-capture' / 'Dockerfile'}: expected 3.13, found 3.14",
         ]
 
     def test_should_flag_missing_base_image_key(self, tmp_path: Path):
         self._write_version_tree(tmp_path)
-        (tmp_path / "workloads" / "images.yml").write_text(
-            "x-base-images:\n  UV_BASE_IMAGE: ghcr.io/astral-sh/uv:0.12.15-python3.13-trixie-slim\n",
+        (tmp_path / "docker-devkit.yaml").write_text(
+            'requires: ">=0"\nbase_images:\n  UV_BASE_IMAGE: ghcr.io/astral-sh/uv:0.12.15-python3.13-trixie-slim\n',
             encoding="utf-8",
         )
         assert version_coupling_violations(tmp_path, VERSION_COUPLINGS) == [
-            f"python: python base tag at {tmp_path / 'workloads' / 'images.yml'}: expected 3.13, found <missing>"
+            f"python: python base tag at {tmp_path / 'docker-devkit.yaml'}: expected 3.13, found <missing>"
         ]
 
     def test_should_flag_site_whose_files_are_absent(self, tmp_path: Path):

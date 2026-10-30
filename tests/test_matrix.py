@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -10,192 +9,107 @@ from docker_devkit.matrix import app
 
 runner = CliRunner()
 
-
-def service(
-    dockerfile: str,
-    *,
-    tags: bool = True,
-    contexts: dict[str, str] | None = None,
-    platforms: list[str] | None = None,
-) -> dict[str, Any]:
-    build: dict[str, Any] = {"dockerfile": dockerfile}
-    if tags:
-        build["tags"] = [f"registry/{dockerfile}:latest"]
-    if contexts is not None:
-        build["additional_contexts"] = contexts
-    if platforms is not None:
-        build["platforms"] = platforms
-    return {"build": build}
+FANNED = "ARG TORCH_DEVICE\nFROM docker.io/library/python:3.13-slim\n"
+DEPENDENT = "FROM neural-networks-base\n"
+EXTERNAL = "FROM docker.io/library/python:3.13-slim\n"
 
 
-TAGGED_BASES: dict[str, Any] = {
-    "services": {
-        "api": service("docker/api/Dockerfile"),
-        "postgres": service("docker/postgres/Dockerfile"),
-        "neural-networks-base-cuda": service("docker/neural-networks-base/Dockerfile"),
-        "reconstructor-cuda": service(
-            "docker/reconstructor/Dockerfile", contexts={"neural-networks-base": "target:neural-networks-base-cuda"}
-        ),
-        "localizer-cuda": service(
-            "docker/localizer/Dockerfile", contexts={"neural-networks-base": "target:neural-networks-base-cuda"}
-        ),
-    }
-}
-
-TAGLESS_BASES: dict[str, Any] = {
-    "services": {
-        "api": service("docker/api/Dockerfile"),
-        "neural-networks-base-cuda": service("docker/neural-networks-base/Dockerfile", tags=False),
-        "reconstructor-cuda": service(
-            "docker/reconstructor/Dockerfile", contexts={"neural-networks-base": "target:neural-networks-base-cuda"}
-        ),
-    }
-}
+def _write_repo(root: Path, dockerfiles: dict[str, str], *, config: dict[str, Any] | None = None) -> None:
+    for service, text in dockerfiles.items():
+        directory = root / "workloads" / service
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "Dockerfile").write_text(text, encoding="utf-8")
+    payload: dict[str, Any] = {"requires": ">=0"}
+    if dockerfiles:
+        payload["repository"] = "ghcr.io/example"
+    if config is not None:
+        payload.update(config)
+    (root / "docker-devkit.yaml").write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def _invoke_matrix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, data: dict[str, Any]) -> Any:
-    (tmp_path / "workloads").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "workloads" / "images.yml").write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+def _invoke_matrix(monkeypatch: Any, tmp_path: Path, dockerfiles: dict[str, str]) -> Any:
+    _write_repo(tmp_path, dockerfiles)
     monkeypatch.chdir(tmp_path)
     return runner.invoke(app, [])
 
 
-def test_tagged_bases_group_with_their_dependents(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    result = _invoke_matrix(monkeypatch, tmp_path, TAGGED_BASES)
+def test_bases_group_with_their_dependents_per_variant(monkeypatch: Any, tmp_path: Path) -> None:
+    result = _invoke_matrix(
+        monkeypatch,
+        tmp_path,
+        {
+            "api": EXTERNAL,
+            "postgres": EXTERNAL,
+            "neural-networks-base": FANNED,
+            "reconstructor": DEPENDENT,
+            "localizer": DEPENDENT,
+        },
+    )
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == [
         {"targets": "api postgres", "variant": "common"},
         {"targets": "localizer-cuda neural-networks-base-cuda reconstructor-cuda", "variant": "cuda"},
+        {"targets": "localizer-rocm neural-networks-base-rocm reconstructor-rocm", "variant": "rocm"},
     ]
 
 
-def test_tagless_bases_ride_as_dependencies_not_targets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    result = _invoke_matrix(monkeypatch, tmp_path, TAGLESS_BASES)
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == [
-        {"targets": "api", "variant": "common"},
-        {"targets": "reconstructor-cuda", "variant": "cuda"},
-    ]
-
-
-def test_single_service_repo_emits_matrix_of_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {"services": {"livekit-token": service("workloads/livekit-token/Dockerfile")}}
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == [{"targets": "livekit-token", "variant": "common"}]
-
-
-def test_cross_compile_targets_get_their_own_legs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile"),
-            "postgres": service("docker/postgres/Dockerfile"),
-            "zed-capture": service("docker/zed-capture/Dockerfile"),
+def test_unfanned_dependents_group_with_their_base(monkeypatch: Any, tmp_path: Path) -> None:
+    result = _invoke_matrix(
+        monkeypatch,
+        tmp_path,
+        {
+            "base": EXTERNAL,
+            "app": "FROM base\n",
         },
-        "x-cross-compile-targets": ["zed-capture"],
-    }
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
+    )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == [
-        {"targets": "api postgres", "variant": "common"},
-        {"targets": "zed-capture", "variant": "common"},
-    ]
+    assert json.loads(result.stdout) == [{"targets": "app base", "variant": "common"}]
 
 
-def test_platform_pinned_services_join_the_cross_compile_cohort(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile"),
-            "zed-capture": service("docker/zed-capture/Dockerfile", platforms=["linux/arm64"]),
-            "aoa-bridge": service("docker/aoa-bridge/Dockerfile", platforms=["linux/arm64"]),
-        }
-    }
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
-
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == [
-        {"targets": "api", "variant": "common"},
-        {"targets": "aoa-bridge zed-capture", "variant": "common"},
-    ]
-
-
-def test_unknown_cross_compile_target_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {"api": service("docker/api/Dockerfile")},
-        "x-cross-compile-targets": ["missing"],
-    }
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
-
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RuntimeError)
-    assert "unknown services" in str(result.exception)
-
-
-def test_group_spanning_cohort_membership_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile"),
-            "zed-capture": service(
-                "docker/zed-capture/Dockerfile", contexts={"api": "target:api"}, platforms=["linux/arm64"]
-            ),
-        }
-    }
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
-
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RuntimeError)
-    assert "spans cross-compile cohort" in str(result.exception)
-
-
-def test_non_target_additional_contexts_do_not_group(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile", contexts={"shared": "docker/shared"}),
-            "postgres": service("docker/postgres/Dockerfile"),
-        }
-    }
-
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
+def test_independent_services_share_the_common_leg(monkeypatch: Any, tmp_path: Path) -> None:
+    result = _invoke_matrix(monkeypatch, tmp_path, {"api": EXTERNAL, "postgres": EXTERNAL})
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == [{"targets": "api postgres", "variant": "common"}]
 
 
-def test_group_spanning_variants_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile"),
-            "reconstructor-cuda": service("docker/reconstructor/Dockerfile", contexts={"api": "target:api"}),
-        }
-    }
+def test_single_service_repo_emits_matrix_of_one(monkeypatch: Any, tmp_path: Path) -> None:
+    result = _invoke_matrix(monkeypatch, tmp_path, {"livekit-token": EXTERNAL})
 
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
-
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RuntimeError)
-    assert "spans gpu variants" in str(result.exception)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == [{"targets": "livekit-token", "variant": "common"}]
 
 
-def test_unknown_target_reference_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    data = {
-        "services": {
-            "api": service("docker/api/Dockerfile", contexts={"base": "target:missing-base"}),
-        }
-    }
+def test_repo_uniform_platforms_leave_the_legs_unchanged(monkeypatch: Any, tmp_path: Path) -> None:
+    _write_repo(
+        tmp_path,
+        {"api": EXTERNAL, "zed-capture": EXTERNAL},
+        config={"platforms": ["linux/arm64"]},
+    )
+    monkeypatch.chdir(tmp_path)
 
-    result = _invoke_matrix(monkeypatch, tmp_path, data)
+    result = runner.invoke(app, [])
 
-    assert result.exit_code != 0
-    assert isinstance(result.exception, RuntimeError)
-    assert "unknown build target" in str(result.exception)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == [{"targets": "api zed-capture", "variant": "common"}]
+
+
+def test_repo_without_config_emits_empty(monkeypatch: Any, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+
+
+def test_config_without_services_emits_empty(monkeypatch: Any, tmp_path: Path) -> None:
+    _write_repo(tmp_path, {}, config={"requires": ">=0.1"})
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
-import platform
 import re
 from pathlib import Path
+from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
 from typing import Annotated, Any, TypedDict
 
@@ -13,11 +14,19 @@ import typer
 from bashrun.bash import bash, bash_check, bash_output
 from build_artifact_registry.builds import push_build
 from build_artifact_registry.setup_oras import install_oras
-from .documents import compute_service_shas, parse_bake
 
-from .image_refs import bake_base_image_refs, resolve_remote_digest
-from .lifecycle import GPU_TYPES, LOCK_PATH, Gpu, detect_gpu, parse_env_file, require_manifest
-from .mirror import load_mirror_config, mirrored_ref
+from .config import CHART_REFERENCE_PREFIX, DEFAULT_MIRROR_PREFIX, LOCK_PATH, chart_lock_key, load_config
+from .documents import (
+    KEEP_STORAGE_PATTERN,
+    BakeMetadata,
+    DaemonConfig,
+    compute_service_shas,
+    parse_image_lock,
+    render_bake,
+)
+from .host import GPU_TYPES, Gpu, detect_gpu, host_platform
+from .image_refs import ImageReference, bake_base_image_refs, resolve_remote_digest
+from .mirror import mirrored_ref
 
 
 METADATA_PATH = Path("metadata.json")
@@ -51,9 +60,16 @@ def build(
     upgrade: bool = typer.Option(False, "--upgrade", "-u", help="Re-resolve and rewrite base digests."),
     lock_only: bool = typer.Option(False, "--lock-only", help="Update lock file without building images."),
     gpu_only: bool = typer.Option(
-        False, "--gpu-only", help="Build only the services suffixed for this gpu (requires a concrete --gpu)."
+        False, "--gpu-only", help="Build only the services declaring this gpu family (requires a concrete --gpu)."
     ),
     no_cache: bool = typer.Option(False, "--no-cache", help="Force rebuild by disabling cache usage."),
+    dev: Annotated[
+        bool, typer.Option("--dev", help="Build each Dockerfile-declared dev stage under the :dev tag (local-only).")
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="With --lock-only: assert the committed lock is fresh instead of writing it."),
+    ] = False,
 ) -> None:
     targets = [service for value in targets_opt or [] for service in value.split()] or None
     run_build(
@@ -64,6 +80,8 @@ def build(
         lock_only=lock_only,
         gpu_only=gpu_only,
         no_cache=no_cache,
+        dev=dev,
+        check=check,
     )
 
 
@@ -76,24 +94,40 @@ def run_build(
     lock_only: bool = False,
     gpu_only: bool = False,
     no_cache: bool = False,
+    dev: bool = False,
+    check: bool = False,
 ) -> None:
     root = Path.cwd()
-    manifest = require_manifest(root)
+    config = load_config(root)
+    if config is None:
+        if not lock_only:
+            raise RuntimeError("No docker-devkit.yaml at the repo root; build derives its targets from it")
+        print("no docker-devkit.yaml; no lock declarations to relock")
+        return
+
+    if dev and push:
+        raise typer.BadParameter("--dev builds local-only images under the :dev tag; drop --push")
+    if dev and lock_only:
+        raise typer.BadParameter("--lock-only writes the lock without building; --dev selects a build shape")
+    if check and not lock_only:
+        raise typer.BadParameter("--check asserts the lock the --lock-only lane would write; pass --lock-only")
+
     lock_file = root / LOCK_PATH
-    mirror_config = load_mirror_config(root)
+    mirror_prefix = config.mirror.prefix if config.mirror is not None else DEFAULT_MIRROR_PREFIX
 
-    bake = parse_bake(manifest)
-
-    service_shas = compute_service_shas(root, bake)
+    service_shas = compute_service_shas(root, config)
     os.environ.update(service_shas)
 
-    lock_data = parse_env_file(lock_file) if lock_file.exists() else {}
+    lock_data = parse_image_lock(lock_file).root if lock_file.exists() else {}
+
+    if not config.service_builds and not lock_only:
+        raise RuntimeError(
+            "no Dockerfile service derives under this repo; build builds the derived services "
+            "(relock declarations without building via --lock-only)"
+        )
 
     if push and gpu == "auto":
         raise typer.BadParameter("With --push, --gpu cannot be 'auto'; specify 'cuda' or 'rocm'.")
-
-    if push and bake.registry_cache is None:
-        raise typer.BadParameter("With --push, the bake file must declare x-registry-cache.")
 
     if gpu_only and gpu not in GPU_TYPES:
         raise typer.BadParameter("--gpu-only requires a concrete gpu (cuda or rocm), not 'auto' or 'none'.")
@@ -102,104 +136,141 @@ def run_build(
     if not push and not lock_only and not targets_opt:
         _check_gc_limits(min_gb=60)
 
-    if gpu == "auto" and not lock_only:
-        gpu = detect_gpu()
-
     # Record one lock entry per declaration: the mirror-prefixed reference, digest resolved
-    # against upstream — crane copies are byte-identical, so the digest holds under both names.
-    if bake.base_images:
-        if mirror_config is None:
-            raise RuntimeError("x-base-images declared without a mirror section in docker-devkit.yaml")
-        for occurrence in bake_base_image_refs(bake):
-            lock_base = mirrored_ref(occurrence.reference, mirror_config.prefix)
-            if DIGEST_TAIL_PATTERN.search(occurrence.reference):
-                lock_data[occurrence.name] = lock_base
-                continue
-            if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
-                continue
-            lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
+    # against upstream — crane copies are byte-identical, so the digest holds under both
+    # names. The declared tag rides the entry, so a tag bump breaks the prefix match and
+    # re-resolves while an unchanged declaration copies its frozen digest forward.
+    declarations: list[ImageReference] = bake_base_image_refs(config)
+    if config.k8s is not None:
+        declarations += [
+            ImageReference(chart_lock_key(name), reference.removeprefix(CHART_REFERENCE_PREFIX))
+            for name, reference in config.k8s.charts.items()
+        ]
+    if lock_only and not declarations:
+        print("no lock declarations (neither base_images nor k8s.charts); nothing to relock")
+        return
+    for occurrence in declarations:
+        lock_base = mirrored_ref(occurrence.reference, mirror_prefix)
+        if DIGEST_TAIL_PATTERN.search(occurrence.reference):
+            lock_data[occurrence.name] = lock_base
+            continue
+        if not upgrade and occurrence.name in lock_data and lock_data[occurrence.name].startswith(lock_base + "@"):
+            continue
+        lock_data[occurrence.name] = f"{lock_base}@{resolve_remote_digest(occurrence.reference)}"
 
-    lock_file.write_text(
-        "\n".join(f"{key}={value}" for key, value in sorted(lock_data.items())) + "\n",
-        encoding="utf-8",
-    )
+    # The lock owns exactly the declared names — an entry whose declaration died is an
+    # orphan the up-time probe would still fail-closed over (an undeclared mirror digest
+    # gating bring-up), so a relock prunes it.
+    declared_names = {occurrence.name for occurrence in declarations}
+    lock_data = {name: reference for name, reference in lock_data.items() if name in declared_names}
+
+    lock_text = "\n".join(f"{key}={value}" for key, value in sorted(lock_data.items())) + "\n"
+
+    if check:
+        committed = lock_file.read_text(encoding="utf-8") if lock_file.exists() else ""
+        if committed != lock_text:
+            print(
+                "".join(
+                    difflib.unified_diff(
+                        committed.splitlines(keepends=True),
+                        lock_text.splitlines(keepends=True),
+                        fromfile=f"committed {LOCK_PATH.as_posix()}",
+                        tofile=f"computed {LOCK_PATH.as_posix()}",
+                    )
+                )
+            )
+            raise SystemExit("image lock is stale. Run 'build --lock-only' and commit the result.")
+        return
+
+    lock_file.write_text(lock_text, encoding="utf-8")
 
     if lock_only:
         return
 
     os.environ.update(lock_data)
 
-    command_arguments: list[str] = []
+    host = host_platform()
+
+    target_variants = {
+        target: variant for service in config.service_builds.values() for target, variant in service.target_variants
+    }
+    dev_targets = {
+        target
+        for service in config.service_builds.values()
+        if service.dev_stage
+        for target, _variant in service.target_variants
+    }
+
+    if dev and not dev_targets:
+        raise RuntimeError(
+            "no service declares a dev stage (a multi-stage Dockerfile carrying an AS dev stage); --dev builds those"
+        )
 
     if targets_opt:
-        unknown = set(targets_opt) - set(bake.services)
+        requested = set(targets_opt)
+        unknown = requested - set(target_variants)
         if unknown:
-            raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(bake.services)}")
-        targets = [t for t in bake.services if t in set(targets_opt)]
+            raise typer.BadParameter(f"Unknown targets: {unknown}. Available: {sorted(target_variants)}")
+        if dev:
+            undeclared = sorted(requested - dev_targets)
+            if undeclared:
+                raise typer.BadParameter(f"--dev builds declared dev stages; no dev stage for {undeclared}")
+        targets = [target for target in target_variants if target in requested]
     else:
-        # Keep cross-compile targets out of the default list (per-arch treatment; opt in via
-        # --targets) and tagless services too — bake rejects a tagless target under --push, so
-        # they ride as in-invocation dependencies.
-        cross_compile_targets: set[str] = set(bake.cross_compile_targets)
-        tagged_services = [service for service, config in bake.services.items() if config.build.tags]
+        # Default targets are the native subset — the repo platforms are undeclared (the
+        # host's arch) or include this host's arch — intersected with the gpu match over
+        # the variant fan. An empty set refuses loudly: bake with no target arguments
+        # builds every service, silently defeating the selection. Host-gpu detection lives
+        # here, so an explicit --targets run never probes the host gpu.
+        if gpu == "auto":
+            gpu = detect_gpu()
+        candidates = dev_targets if dev else set(target_variants)
+        native = not config.platforms or host in config.platforms
         if gpu_only:
             targets = [
-                service
-                for service in tagged_services
-                if service.endswith(f"-{gpu}") and service not in cross_compile_targets
+                target
+                for target, variant in target_variants.items()
+                if native and target in candidates and variant == gpu
             ]
         else:
             targets = [
-                service
-                for service in tagged_services
-                if (not any(service.endswith(f"-{g}") for g in GPU_TYPES) or service.endswith(f"-{gpu}"))
-                and service not in cross_compile_targets
+                target
+                for target, variant in target_variants.items()
+                if native and target in candidates and variant in (None, gpu)
             ]
-
-    if push:
-        for target in targets:
-            target_cache = f"{bake.registry_cache}:{target}"
-            command_arguments.append(
-                f"--set {target}.cache-to+=type=registry,ref={target_cache},mode=max,image-manifest=true,oci-mediatypes=true"
+        if not targets:
+            raise RuntimeError(
+                f"No service targets this machine's arch ({host}) under gpu '{gpu}'; "
+                f"name targets with --targets to cross-build. Services: {sorted(target_variants)}"
             )
-            command_arguments.append(f"--set {target}.cache-from+=type=registry,ref={target_cache}")
 
-    # Override multi-platform targets to the host arch for --load, which writes a single arch;
-    # the override key is `platform` even though the bake field is plural.
-    if not push:
-        machine = platform.machine().lower()
-        if machine in ("x86_64", "amd64"):
-            host_platform = "linux/amd64"
-        elif machine in ("aarch64", "arm64"):
-            host_platform = "linux/arm64"
-        else:
-            raise RuntimeError(f"Unsupported host architecture: {machine}")
-        for target in targets:
-            if len(bake.services[target].build.platforms) > 1:
-                command_arguments.append(f"--set {target}.platform={host_platform}")
+    rendered = render_bake(config, push=push, host=host, dev=dev)
 
-    command_arguments.append("--push" if push else "--load")
+    # Drop stale metadata so the coverage check cannot pass against a previous run.
+    METADATA_PATH.unlink(missing_ok=True)
+
+    command_arguments: list[str] = [
+        "--progress auto",
+        "--provenance=false",
+        "--sbom=false",
+        "--push" if push else "--load",
+    ]
 
     if no_cache:
         command_arguments.append("--no-cache")
 
     command_arguments.extend(targets)
 
-    # Drop stale metadata so the coverage check cannot pass against a previous run.
-    METADATA_PATH.unlink(missing_ok=True)
+    with TemporaryDirectory(prefix="bake-") as bake_dir:
+        bake_file = Path(bake_dir) / "bake.yaml"
+        bake_file.write_text(rendered, encoding="utf-8")
+        _run_bake(bake_file, command_arguments, rendered)
 
-    command = [
-        "docker buildx bake",
-        f"-f {manifest}",
-        f"--metadata-file {METADATA_PATH}",
-        "--progress auto",
-        "--provenance=false",
-        "--sbom=false",
-    ] + command_arguments
-    bash(" ".join(command))
-
-    baked_images: dict[str, Any] = json.loads(METADATA_PATH.read_text()) if METADATA_PATH.exists() else {}
-    if not set(targets) <= baked_images.keys():
+    metadata_json: dict[str, Any] = (
+        json.loads(METADATA_PATH.read_text(encoding="utf-8")) if METADATA_PATH.exists() else {}
+    )
+    baked = BakeMetadata.model_validate(metadata_json)
+    if not set(targets) <= baked.root.keys():
         raise RuntimeError("Bake output does not cover the requested targets")
 
     # Shelve the digest manifest under the REGISTRY shelf, tagged with the checkout HEAD.
@@ -214,21 +285,8 @@ def run_build(
         install_oras()
         digest_manifest: dict[str, DigestEntry] = {}
         for target in targets:
-            entry = baked_images[target]
-            image_name = entry["image.name"]
-            digest = entry["containerimage.digest"]
-            refs = [reference.strip() for reference in image_name.split(",") if reference.strip()]
-            image_ref = ""
-            tags: list[str] = []
-            for reference in refs:
-                reference = reference.split("@", 1)[0]
-                repository, separator, tag = reference.rpartition(":")
-                if separator:
-                    image_ref = repository
-                    tags.append(tag)
-            if not tags:
-                raise ValueError(f"target '{target}' produced no tagged image references from '{image_name}'")
-            digest_manifest[target] = {"ref": image_ref, "digest": digest, "tags": tags}
+            image = baked.root[target]
+            digest_manifest[target] = {"ref": image.ref, "digest": image.digest, "tags": image.tags}
         key = hashlib.sha256(",".join(sorted(targets)).encode("utf-8")).hexdigest()[:8]
         with TemporaryDirectory(prefix="digest-manifest-") as staging:
             manifest_path = Path(staging) / DIGEST_FILE_NAME
@@ -241,6 +299,19 @@ def run_build(
                 Path(staging),
                 [DIGEST_FILE_NAME],
             )
+
+
+def _run_bake(bake_file: Path, command_arguments: list[str], rendered: str) -> None:
+    # The temp bake file vanishes with its directory, so a failed bake re-raises with the
+    # rendered content attached — the failure stays inspectable after the run.
+    try:
+        bash(
+            " ".join(["docker buildx bake", f"-f {bake_file}", f"--metadata-file {METADATA_PATH}", *command_arguments])
+        )
+    except CalledProcessError as error:
+        raise RuntimeError(
+            f"docker buildx bake failed (exit {error.returncode}); rendered bake file:\n{rendered}"
+        ) from error
 
 
 def _check_gc_limits(min_gb: int = 60):
@@ -256,21 +327,19 @@ def _check_gc_limits(min_gb: int = 60):
         print(f"    [WARN] No readable daemon.json found. Ensure defaultKeepStorage > {min_gb}GB.")
         return
 
-    data = json.loads(config.read_text())
-    raw = data.get("builder", {}).get("gc", {}).get("defaultKeepStorage")
-    if not raw:
-        sample = json.dumps({"builder": {"gc": {"defaultKeepStorage": f"{min_gb}GB"}}}, indent=2)
-        raise RuntimeError(f"builder.gc.defaultKeepStorage missing in {config}; need >= {min_gb}GB:\n\n{sample}")
-
-    m = re.match(r"^(\d+(?:\.\d+)?)\s*([TGMK]i?B)?$", str(raw), re.IGNORECASE)
-    if not m:
+    daemon = DaemonConfig.model_validate(
+        json.loads(config.read_text(encoding="utf-8")), context={"path": config, "min_gb": min_gb}
+    )
+    raw = daemon.builder.gc.default_keep_storage
+    match = KEEP_STORAGE_PATTERN.match(str(raw))
+    if match is None:
         raise RuntimeError(f"Could not parse 'defaultKeepStorage' value: {raw}")
 
-    mult = {"T": 1024, "G": 1, "M": 1 / 1024, "K": 1 / 1024**2, "B": 1 / 1024**3}
-    unit = (m.group(2) or "B")[0].upper()
-    val = float(m.group(1)) * mult.get(unit, 1 / 1024**3)
+    multipliers = {"T": 1024, "G": 1, "M": 1 / 1024, "K": 1 / 1024**2, "B": 1 / 1024**3}
+    unit = (match.group(2) or "B")[0].upper()
+    gigabytes = float(match.group(1)) * multipliers.get(unit, 1 / 1024**3)
 
-    if val < min_gb:
-        raise RuntimeError(f"Docker GC limit {val:.1f}GB in {config} is below the required {min_gb}GB")
+    if gigabytes < min_gb:
+        raise RuntimeError(f"Docker GC limit {gigabytes:.1f}GB in {config} is below the required {min_gb}GB")
 
-    print(f"    [OK] Docker GC Limit verified: {val:.1f}GB")
+    print(f"    [OK] Docker GC Limit verified: {gigabytes:.1f}GB")

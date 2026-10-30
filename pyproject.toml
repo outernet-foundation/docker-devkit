@@ -1,6 +1,6 @@
 [project]
 name = "docker-devkit"
-version = "0.0.0.dev0"
+version = "0.5.9"
 description = "Docker-stack lifecycle commands (up/down/build) driven by a pyproject-declared compose assembly"
 requires-python = ">=3.13"
 dependencies = [
@@ -33,6 +33,7 @@ up = "docker_devkit.compose:up_app"
 down = "docker_devkit.compose:down_app"
 build = "docker_devkit.build_docker:app"
 mirror = "docker_devkit.mirror:app"
+publish-compose = "docker_devkit.publish_compose:app"
 generate-score = "docker_devkit.score_generate:app"
 docker-build-matrix = "docker_devkit.matrix:app"
 

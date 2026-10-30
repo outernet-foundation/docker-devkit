@@ -66,8 +66,8 @@ def compile_entry(text: str, name: str, tmp_path: Path, images: dict[str, str] |
     source = tmp_path / name
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="utf-8")
-    with compiled_provisioners(tmp_path, [name], tmp_path, images or {}) as paths:
-        return paths[0].read_text(encoding="utf-8")
+    with compiled_provisioners(tmp_path, [name], tmp_path, images or {}) as compiled:
+        return compiled.paths[0].read_text(encoding="utf-8")
 
 
 def test_uri_and_type_are_required() -> None:
@@ -225,22 +225,22 @@ def test_none_valued_fields_are_dropped(tmp_path: Path) -> None:
 
 
 def test_non_list_document_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match=r"Input should be a valid list"):
+    with pytest.raises(ValidationError, match=r"Input should be a valid list"):
         compile_entry("uri: template://example/x\ntype: example-x\n", "x.yaml", tmp_path)
 
 
 def test_empty_file_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match=r"Input should be a valid list"):
+    with pytest.raises(ValidationError, match=r"Input should be a valid list"):
         compile_entry("", "x.yaml", tmp_path)
 
 
 def test_empty_document_list_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="non-empty YAML list"):
+    with pytest.raises(ValidationError, match="non-empty YAML list"):
         compile_entry("[]\n", "x.yaml", tmp_path)
 
 
 def test_validation_errors_carry_the_source_name(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match=r"database\.yaml"):
+    with pytest.raises(ValidationError, match=r"database\.yaml"):
         compile_entry(
             """
 - uri: template://example/database
@@ -258,9 +258,9 @@ def test_compiled_provisioners_write_tempdir_copies_under_the_source_dir(tmp_pat
     (tmp_path / "compose").mkdir()
     (tmp_path / "compose" / "database.yaml").write_text(COMPOSE_ENTRY, encoding="utf-8")
 
-    with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as paths:
-        assert len(paths) == 1
-        compiled_path = paths[0]
+    with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as compiled:
+        assert len(compiled.paths) == 1
+        compiled_path = compiled.paths[0]
         assert tmp_path in compiled_path.parents
         assert compiled_path.name == "database.yaml"
         entries = parse_entries(compiled_path.read_text(encoding="utf-8"))
@@ -271,10 +271,24 @@ def test_compiled_provisioners_write_tempdir_copies_under_the_source_dir(tmp_pat
 
 
 def test_compiled_provisioners_yield_nothing_without_names(tmp_path: Path) -> None:
-    with compiled_provisioners(tmp_path, [], tmp_path, {}) as paths:
-        assert paths == []
+    with compiled_provisioners(tmp_path, [], tmp_path, {}) as compiled:
+        assert compiled.paths == []
+        assert not compiled.declares_services
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_compile_reports_whether_provisioners_declare_services(tmp_path: Path) -> None:
+    (tmp_path / "compose").mkdir()
+    (tmp_path / "compose" / "database.yaml").write_text(COMPOSE_ENTRY, encoding="utf-8")
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "database-k8s.yaml").write_text(K8S_ENTRY, encoding="utf-8")
+
+    with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as compiled:
+        assert compiled.declares_services
+
+    with compiled_provisioners(tmp_path, ["k8s/database-k8s.yaml"], tmp_path, {}) as compiled:
+        assert not compiled.declares_services
 
 
 def test_compiled_provisioners_reject_string_form_before_any_writes(tmp_path: Path) -> None:
@@ -289,7 +303,7 @@ def test_compiled_provisioners_reject_string_form_before_any_writes(tmp_path: Pa
     )
 
     with (
-        pytest.raises(RuntimeError, match=r"legacy\.yaml"),
+        pytest.raises(ValidationError, match=r"legacy\.yaml"),
         compiled_provisioners(tmp_path, ["legacy.yaml"], tmp_path, {}),
     ):
         pass
@@ -304,10 +318,10 @@ def test_compiled_output_is_independent_of_working_directory(tmp_path: Path) -> 
     expected = compile_entry(COMPOSE_ENTRY, "compose/database.yaml", tmp_path)
 
     with chdir(Path("/")):
-        with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as paths:
-            compiled = paths[0].read_text(encoding="utf-8")
+        with compiled_provisioners(tmp_path, ["compose/database.yaml"], tmp_path, {}) as compiled:
+            compiled_text = compiled.paths[0].read_text(encoding="utf-8")
 
-    assert compiled == expected
+    assert compiled_text == expected
 
 
 def test_compile_resolves_text_includes_before_stringifying(tmp_path: Path) -> None:

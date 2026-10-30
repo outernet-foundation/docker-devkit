@@ -4,10 +4,17 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, NamedTuple, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    RootModel,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from .markers import resolve_includes, resolve_lock_refs
 
@@ -40,55 +47,62 @@ class AuthoredProvisioner(BaseModel):
     services: dict[str, Any] | None = None
     manifests: list[Any] | None = None
 
-    @field_validator("state", "outputs", "volumes", "services", mode="before")
+    @field_validator(*STRING_FORM_FIELDS, mode="before")
     @classmethod
-    def _reject_string_mappings(cls, value: Any) -> Any:
+    def _reject_string_form(cls, value: Any, info: ValidationInfo) -> Any:
         if not isinstance(value, str):
             return value
 
-        raise ValueError("field is already in score's compiled string form; author it as a mapping")
-
-    @field_validator("manifests", mode="before")
-    @classmethod
-    def _reject_string_manifests(cls, value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-
-        raise ValueError("field is already in score's compiled string form; author it as a list")
+        shape = "list" if info.field_name == "manifests" else "mapping"
+        context: dict[str, Any] = info.context or {}
+        raise ValueError(
+            f"{context.get('name', 'the provisioner file')}: "
+            f"{info.field_name} is already in score's compiled string form; author it as a {shape}"
+        )
 
 
 class AuthoredProvisioners(RootModel[list[AuthoredProvisioner]]):
-    pass
+    @model_validator(mode="after")
+    def _require_entries(self, info: ValidationInfo) -> Self:
+        if not self.root:
+            context: dict[str, Any] = info.context or {}
+            raise ValueError(
+                f"{context.get('name', 'the provisioner file')}: "
+                "an authored provisioner file is a non-empty YAML list of provisioner entries"
+            )
+        return self
+
+
+class CompiledProvisioners(NamedTuple):
+    # declares_services is the phantom-service condition: score-compose synthesizes its
+    # wait-for-resources gate exactly when provisioner-added services exist, and the
+    # devkit's built-in gate-pin template registers on it.
+    paths: list[Path]
+    declares_services: bool
 
 
 @contextmanager
 def compiled_provisioners(
     source_dir: Path, names: list[str], root: Path, images: dict[str, str]
-) -> Generator[list[Path]]:
+) -> Generator[CompiledProvisioners]:
     # Compile into a per-run tempdir under source_dir: the string form never touches the
     # committed tree, and --provisioners paths stay repo-relative.
     if not names:
-        yield []
+        yield CompiledProvisioners(paths=[], declares_services=False)
         return
 
     with TemporaryDirectory(prefix="compiled-provisioners-", dir=source_dir) as temporary_directory:
         directory = Path(temporary_directory)
         paths: list[Path] = []
+        declares_services = False
         for name in names:
             document = resolve_lock_refs(
                 resolve_includes(yaml.safe_load((source_dir / name).read_text(encoding="utf-8")), root, name),
                 images,
                 name,
             )
-            try:
-                authored = AuthoredProvisioners.model_validate(document)
-            except ValidationError as error:
-                raise RuntimeError(f"{name}: authored provisioner rejected: {error}") from error
-
-            if not authored.root:
-                raise RuntimeError(
-                    f"{name}: an authored provisioner file is a non-empty YAML list of provisioner entries"
-                )
+            AuthoredProvisioners.model_validate(document, context={"name": name})
+            declares_services = declares_services or any(entry.get("services") for entry in document)
 
             # Compile from the raw authored dicts so authored key order controls dump order.
             compiled_entries: list[dict[str, Any]] = []
@@ -105,7 +119,7 @@ def compiled_provisioners(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(dump_compose(compiled_entries), encoding="utf-8", newline="")
             paths.append(target)
-        yield paths
+        yield CompiledProvisioners(paths=paths, declares_services=declares_services)
 
 
 def dump_compose(value: Any) -> str:
