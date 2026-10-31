@@ -47,6 +47,27 @@ P4b overlay         phase 21      cross-repo dev overlay — trigger-gated, not 
 
 Order within a cluster is strict; cluster order is fixed above.
 
+## Session-start checkout state
+
+The plan spans seven repos. A session opening on a fresh machine verifies
+every repo against this table before any phase work runs and refuses loudly
+on any mismatch — wrong branch or wrong commit. docker-devkit is the one
+exception to exact-sha matching: the commit that recorded this table
+advanced `more-docs` past its listed sha, so verify its sha is HEAD or an
+ancestor of HEAD (`git merge-base --is-ancestor <sha> HEAD`). Once phase
+sessions begin landing commits on a repo, that repo's HEAD advances past
+its recorded sha by design; only the branch keeps needing to match.
+
+| Repo | Branch | Commit |
+|---|---|---|
+| docker-devkit | more-docs | 191b57cfd352727d836489c1482affb1f63a3840 |
+| build-artifact-registry | dev | ed88c3a338cd64627185c7dac73342b6d08f1c58 |
+| github-actions-toolkit | dev | 44bcf9be6f4456ba978ae4e1438be9e8fbf35a32 |
+| placeframe | compose-bundles | 71994eace2dabb17389ccb9e2ead1dd75f062eed |
+| Make-it-Sing | compose-bundles | a73e8070f7385765614e28e28c3fde1c8231b89a |
+| placeframe-capture-tool | compose-bundles | 6f9430bee373bdd1b47998b913ed70cb0b8b5eb5 |
+| infra | placeframe-pulumi | 152057b859da2c0235b5b93bc63c4c03727882e3 |
+
 ## Session protocol
 
 One phase per session. Verify with the target repo's battery (`uv run pytest`,
