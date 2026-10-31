@@ -1,14 +1,17 @@
 # Artifact identity: images and compose bundles
 
-Pre-implementation ADR, four linked initiatives: give `tree-` tags a precise,
-fail-closed input closure in docker-devkit (Part 1); give images and compose
-bundles per-unit semver release lines in github-actions-toolkit (Part 2); let
-consumers pin external compose bundles by version tag through
-`docker-devkit.lock` (Part 3); and give consumers a per-machine local-override
-surface for iterating on producer checkouts (Part 4). This file absorbs and
-replaces `plan-image-identity.md` (deleted in the same commit; git is the
-history), capturing investigation sessions 2026-10-15 and 2026-10-22 plus the
-consumer-consumption rulings of 2026-10-30. All open questions are closed and
+Pre-implementation ADR, five linked initiatives: give `docker-devkit.lock` a
+platform-resolved, structured-YAML shape (Part 0); give `tree-` tags a
+precise, fail-closed input closure in docker-devkit (Part 1); give images and
+compose bundles per-unit semver release lines in github-actions-toolkit
+(Part 2); let consumers pin external compose bundles by version tag through
+`docker-devkit.lock` (Part 3); and give consumers a per-machine
+local-override surface for iterating on producer checkouts (Part 4). This
+file absorbs and replaces `plan-image-identity.md` and
+`plan-platform-resolved-lock.md` (both deleted in absorbing commits; git is
+the history), capturing investigation sessions 2026-10-15 and 2026-10-22,
+the consumer-consumption rulings of 2026-10-30, and the platform-resolved
+lock rulings of 2026-10-31. All open questions are closed and
 recorded at the end. The compose consumer model's present truth lives in this
 repo's `AGENTS.md`; this ADR records the changes to it. Code anchors are as of
 their capture date and may drift.
@@ -49,7 +52,119 @@ forces one (npm dist-tag; image and bundle dev spellings). Post-Part-2 every
 consumable artifact type carries a per-unit semver line; the CalVer git tag
 stays the release-event grouping label. Post-Part-3 every org-internal
 artifact a consumer declares resolves by tag in config to a digest in the
-lock — the same law for base images, charts, and bundles.
+lock — the same law for base images, charts, and bundles. Post-Part-0 the
+lock is structured YAML recording, per image, the index digest plus one
+concrete manifest digest per declared platform — arch is never resolved by
+whichever machine touches an image.
+
+## Part 0 — docker-devkit: platform-resolved lock
+
+### The defect being fixed
+
+`build`'s lock writer resolves a declared tag to its top-level digest — for a
+multi-platform tag the **index** digest (the manifest list), not a
+per-platform manifest. A consumer that pulls the pinned ref without a
+platform expression gets whichever platform the *resolving machine* runs:
+capture-tool's save/load ship path resolves on the amd64 build host and
+delivers amd64 loki/alloy to the arm64 ZED box (`exec format error` on every
+boot since first deploy; diagnosis in placeframe-capture-tool's
+`zed-aoa-diagnosis-handoff.md`). Pull-on-target consumers are unaffected —
+the receiving daemon resolves the index for its own arch — so the defect
+stays invisible until a middleman ships across arches. The keycloak incident
+(`plan-mirror-digest-retention.md`) independently recorded the same fact:
+lock digests are list digests.
+
+### The law
+
+Same inputs (config + lock) produce the same bytes on any machine, any arch,
+any day. A machine's own architecture participates only in the final act of
+executing bytes. The defect is the one place resolution consults the
+resolving machine implicitly; this part removes the last implicit arch
+decision.
+
+### Design
+
+1. **`platforms` is required whenever `base_images` is declared** — refuse at
+   `load_config`. It stops being an optional build hint and becomes the
+   explicit deploy-target declaration. Charts are exempt (arch-neutral OCI
+   artifacts); bundles, when Part 3 adds them, are exempt likewise.
+2. **The lock becomes structured YAML** — per image the index digest plus one
+   concrete manifest digest per declared platform; charts and bundles stay
+   flat refs:
+
+   ```yaml
+   images:
+     LOKI_IMAGE:
+       index: ghcr.io/outernet-foundation/mirror/docker.io/grafana/loki:3.5.0@sha256:…
+       platforms:
+         linux/arm64: ghcr.io/outernet-foundation/mirror/docker.io/grafana/loki:3.5.0@sha256:…
+   charts:
+     KEYCLOAK_CHART: oci://ghcr.io/…@sha256:…
+   ```
+
+   The platform axis cannot live in env-var grammar: flat compound keys
+   (`LOKI_IMAGE_LINUX_ARM64`) encode schema as string discipline, scatter
+   selection into every consumer, and cannot express index-vs-dish
+   distinctions. The env-line format was adequate at one axis; its two
+   documented virtues — native `--env-file` consumption at the `up` handoff
+   and the raw-`docker compose` valve — are preserved by synthesis (below).
+   The committed lock becomes the complete truth: every exact byte-stream the
+   system can run, and for which machines, readable without touching a
+   registry.
+3. **The resolver records the complete resolution** against the upstream
+   reference: index digest plus one concrete manifest digest per declared
+   platform. Selection rules: exact `os`/`architecture` match;
+   `unknown/unknown` and attestation-annotated entries skipped; multiple
+   matches refuse loudly naming the entry; single-manifest refs and
+   `@digest` declarations record the manifest uniformly as index and sole
+   platform entry. Resolution is a pure function of config — the writing
+   machine's arch is never consulted.
+4. **Selection centralizes in one function** (an `entry_for(lock, name,
+   platform)` shape): the compose/bake edges, `install-zed`, and the markers
+   all call it; no consumer constructs keys or picks digests itself.
+5. **Env synthesis at the consumption edges**: `up`/`down` materialize a
+   per-run env file (the selected platform entries) attached as the second
+   `--env-file` — same temp lifecycle as the materialized root compose file,
+   printed and kept on failure like the bake file. Bake receives the same
+   synthesis in-process. A `lock-env` verb emits the synthesized env on
+   stdout for the raw-`docker compose` pressure valve. Part 4's
+   producer-lock attachment consumes the same synthesis instead of attaching
+   the lock file raw.
+6. **Platform selection at the up edge is declaration-driven**: a config
+   `platforms` singleton selects itself; a multi-platform repo's `.env`
+   names `PLATFORM=` (committed per deploy target). Never host introspection.
+7. **Markers resolve by substrate**: `lock:`/`lock-image:` under k8s resolve
+   the **index** (kubelet resolves per node — architecturally correct);
+   compose-side resolution selects the platform dish.
+8. **The mirror verb probes every recorded digest** (index plus dishes) —
+   presence by exact bytes. The copy itself is unchanged: whole index, dishes
+   ride along; `crane copy` byte-identity keeps upstream and mirror digests
+   equal. The retention fix sketch's digest-aliases
+   (`plan-mirror-digest-retention.md`) compose with this rule — adopted, they
+   would keep dishes GC-safe the same way they keep indexes.
+9. **The writer is deterministic**: sorted images/charts and platform keys,
+   byte-stable across machines — the `--lock-only --check` gate stays
+   hermetic on any-arch runner.
+
+### Migration
+
+No dual-read: the typed loader swaps wholesale, and the devkit version bump
+turns every consumer's `--check` gate red until each repo relocks once — the
+YAML rewrite re-resolves every entry, so the declaration-freeze/`--upgrade`
+migration question dissolves in the cutover. capture-tool relocks to arm64
+dishes and deploys the ZED box; placeframe adds `platforms: [linux/amd64]`
+and Make-it-Sing declares its platform at the same relock (the config
+refusal forces the one line). Ships inside the cluster-P1 release (see
+Sequencing) so Part 1's hasher and every later consumer build against the
+final lock shape — one format migration, one relock wave, not two.
+
+### Verification owed
+
+- ghcr serves child manifests by digest — a pull and a `crane digest`
+  against the mirror by a recorded dish digest. Children's existence inside
+  the copied index is verified; per-digest retrieval is not.
+- Spot-check a relocked entry: `buildx imagetools inspect --raw <digest>`
+  answers a manifest, not an index.
 
 ## Part 1 — docker-devkit: precise input closure for `tree-` tags
 
@@ -529,7 +644,9 @@ dead-code windows, and consumer migration waves. Pain-relief timing is
 explicitly a non-goal.
 
 ```
-1. P1  tree-tag precision (docker-devkit) → relock + regeneration cycle
+1. P0 + P1  platform-resolved lock + tree-tag precision as ONE
+      docker-devkit release → relock + regeneration cycle;
+      capture-tool's relock unblocks the ZED-box AOA deploy
 2. P2  semver lines + {sha}-only publishes (github-actions-toolkit
       + build-artifact-registry) → versions exist
 3. P3 + P4a as ONE docker-devkit consumer-surface release
@@ -542,7 +659,10 @@ The three derivations behind it:
 
 1. No rework: an override shipped before Part 3 would be built, tested, and
    documented against digest-ref yaml — a spelling Part 3 deletes — then
-   partially reworked. Everything ships once, against final shapes.
+   partially reworked. Everything ships once, against final shapes. Part 0
+   rides the step-1 release for the same reason: a separate platform-lock
+   release would force two lock-format migrations and two relock waves, and
+   Part 1's hasher would build against a format that dies weeks later.
 2. Entangled changes ship together, independent ones separately: qualified
    names → lock keys → override names → `BUNDLES=` parsing are one cluster in
    the selection machinery; Part 1 is the hash/build side and touches none of
@@ -611,6 +731,19 @@ that implementing sessions execute.
 13. Sequencing optimizes for least error-proneness (ruling out a
     pain-first ordering); three releases plus a trigger-gated stage 2;
     consumers adopt in one wave.
+14. Lock records platform resolution (Part 0): `platforms` required
+    wherever `base_images` is declared; per image the lock stores the index
+    digest plus one concrete manifest digest per declared platform — exact
+    os/arch selection, attestations skipped, ambiguity refused; machine arch
+    is never consulted during resolution.
+15. Lock format is structured YAML (images carry index plus a platforms
+    map; charts and bundles stay flat); env consumption is synthesized
+    per-run at the compose/bake edges, with a `lock-env` verb preserving the
+    raw-compose valve; markers resolve the index under k8s and the platform
+    dish under compose; selection centralizes in one devkit function.
+16. Part 0 ships inside the cluster-P1 docker-devkit release — one
+    lock-format migration and one consumer relock wave, with Parts 1-4
+    building against the final lock shape.
 
 Course adjustment (2026-10-22, absorbed): precision attribution replaced the
 original coarse-bucket Part 1 because per-unit semver made precision
