@@ -553,8 +553,9 @@ The three derivations behind it:
    spellings, yaml versions, lock entries, override adoption as one reviewable
    change — instead of once per feature.
 
-The order and the release boundaries are ruled here; the implementation-plan
-session owns work breakdown within each release.
+The order and the release boundaries are ruled here;
+`plan-artifact-identity-implementation.md` owns the phase-level work breakdown
+that implementing sessions execute.
 
 ## Closed decisions
 
